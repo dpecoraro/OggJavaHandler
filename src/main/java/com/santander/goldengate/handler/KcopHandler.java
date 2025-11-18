@@ -2,6 +2,7 @@ package com.santander.goldengate.handler;
 
 import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
+import java.nio.ByteBuffer; // added
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
@@ -9,6 +10,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.avro.Schema;
 import org.apache.avro.Schema.Field;
@@ -66,7 +69,9 @@ public class KcopHandler extends AbstractHandler {
         try {
             Properties kafkaProps = new Properties();
             if (kafkaProducerConfigFile != null) {
-                kafkaProps.load(new FileInputStream(kafkaProducerConfigFile));
+                try (FileInputStream fis = new FileInputStream(kafkaProducerConfigFile)) {
+                    kafkaProps.load(fis);
+                }
             } else {
                 // Default properties
                 kafkaProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
@@ -74,6 +79,9 @@ public class KcopHandler extends AbstractHandler {
                 kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
                 kafkaProps.put(ProducerConfig.ACKS_CONFIG, "all");
             }
+            // Force correct serializers (avoid external misconfiguration)
+            kafkaProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+            kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
             kafkaProducer = new KafkaProducer<>(kafkaProps);
             System.out.println(">>> [KcopHandler] Kafka Producer initialized");
         } catch (Exception ex) {
@@ -113,10 +121,12 @@ public class KcopHandler extends AbstractHandler {
         String table = operation.getTableName() != null ? operation.getTableName().toString() : "UNKNOWN";
         String opType = operation.getOperationType().name();
 
+        System.out.println(">>> [KcopHandler] Retrieved metadata for table " + table); 
         // Get table metadata
         TableMetaData tableMetaData = null;
         if (metaData != null && operation.getTableName() != null) {
             tableMetaData = metaData.getTableMetaData(operation.getTableName());
+            System.out.println(">>> [KcopHandler] Retrieved metadata: " + tableMetaData); 
         }
 
         Map<String, Object> beforeImage = new LinkedHashMap<>();
@@ -176,8 +186,12 @@ public class KcopHandler extends AbstractHandler {
             
             // Serialize to Avro binary
             byte[] avroBytes = serializeAvro(avroSchema, cdcRecord);
-            
-            // Send to Kafka
+
+            if (kafkaProducer == null) {
+                System.err.println("[KcopHandler] Kafka producer not initialized, skipping send.");
+                return;
+            }
+
             String topic = "cdc." + table.toLowerCase().replace(".", "_");
             String key = tx.getTranID().toString(); // Use transaction ID as key
             
@@ -203,6 +217,7 @@ public class KcopHandler extends AbstractHandler {
     }
 
     private Schema getOrCreateAvroSchema(String tableName, TableMetaData tableMetaData) {
+        System.out.println(">>> [KcopHandler] Generating Avro schema for table " + tableName);
         if (schemaCache.containsKey(tableName)) {
             return schemaCache.get(tableName);
         }
@@ -247,24 +262,37 @@ public class KcopHandler extends AbstractHandler {
     }
 
     private Schema buildColumnSchema(ColumnMetaData cm) {
+        System.out.println(">>> [KcopHandler] Building column schema for column " + cm.getColumnName() 
+        + " with data type " 
+        + cm.getDataType());
         String colName = cm.getColumnName();
         String dataTypeName = cm.getDataType() != null ? cm.getDataType().toString().toUpperCase() : "STRING";
-        
-        // Determine base Avro type based on database type
+        String dataTypeRaw  = cm.getDataType() != null ? cm.getDataType().toString() : "";
+
+        int precision = -1;
+        int scale = -1;
+        // Parse patterns like NUMBER(15,2), DECIMAL(10,0), NUMERIC(8)
+        Matcher m = Pattern.compile("\\((\\d+)(?:\\s*,\\s*(\\d+))?\\)").matcher(dataTypeRaw);
+        if (m.find()) {
+            try {
+                precision = Integer.parseInt(m.group(1));
+                if (m.group(2) != null) scale = Integer.parseInt(m.group(2));
+            } catch (NumberFormatException ignore) {}
+        }
+
         Schema baseSchema;
         String logicalType;
-        
+
         if (dataTypeName.contains("NUMBER") || dataTypeName.contains("DECIMAL") || dataTypeName.contains("NUMERIC")) {
-            // For DECIMAL/NUMBER, use long or int based on scale
-            // If has decimal places, could use string; for simplicity using long for integers
-            baseSchema = Schema.create(Type.LONG);
+            if (scale > 0) {
+                baseSchema = Schema.create(Type.DOUBLE);
+            } else {
+                baseSchema = Schema.create(Type.LONG);
+            }
             logicalType = "DECIMAL";
         } else if (dataTypeName.contains("INT") || dataTypeName.contains("SMALLINT") || dataTypeName.contains("BIGINT")) {
-            if (dataTypeName.contains("BIGINT")) {
-                baseSchema = Schema.create(Type.LONG);
-            } else {
-                baseSchema = Schema.create(Type.INT);
-            }
+            if (dataTypeName.contains("BIGINT")) baseSchema = Schema.create(Type.LONG);
+            else baseSchema = Schema.create(Type.INT);
             logicalType = "DECIMAL";
         } else if (dataTypeName.contains("FLOAT") || dataTypeName.contains("DOUBLE") || dataTypeName.contains("REAL")) {
             baseSchema = Schema.create(Type.DOUBLE);
@@ -282,29 +310,26 @@ public class KcopHandler extends AbstractHandler {
             baseSchema = Schema.create(Type.BYTES);
             logicalType = "BINARY";
         } else {
-            // Default to string
             baseSchema = Schema.create(Type.STRING);
             logicalType = "CHARACTER";
         }
-        
-        // Add custom properties to match your example format
+
         baseSchema.addProp("logicalType", logicalType);
         baseSchema.addProp("dbColumnName", colName);
-        
-        // Add precision/scale for numeric types (note: GG API may not expose these easily)
-        if (logicalType.equals("DECIMAL")) {
-            // Try to get precision/scale if available; default values if not
-            baseSchema.addProp("precision", 15); // default
-            baseSchema.addProp("scale", 0);      // default
+
+        if ("DECIMAL".equals(logicalType)) {
+            baseSchema.addProp("precision", precision > 0 ? precision : 15);
+            baseSchema.addProp("scale", scale >= 0 ? scale : 0);
         }
-        
-        // Add length for character types
-        if (logicalType.equals("CHARACTER") || logicalType.equals("TIMESTAMP") || logicalType.equals("DATE") || logicalType.equals("TIME")) {
-            // Estimate length; adjust as needed
-            int length = logicalType.equals("TIMESTAMP") ? 32 : (logicalType.equals("DATE") ? 10 : (logicalType.equals("TIME") ? 8 : 255));
+
+        if (logicalType.equals("CHARACTER") || logicalType.equals("TIMESTAMP") ||
+            logicalType.equals("DATE") || logicalType.equals("TIME")) {
+            int length = logicalType.equals("TIMESTAMP") ? 32 :
+                         logicalType.equals("DATE") ? 10 :
+                         logicalType.equals("TIME") ? 8 : 255;
             baseSchema.addProp("length", length);
         }
-        
+
         return baseSchema;
     }
 
@@ -312,19 +337,13 @@ public class KcopHandler extends AbstractHandler {
         Type type = schema.getType();
         switch (type) {
             case INT:
-            case LONG:
-                return 0;
+            case LONG: return 0;
             case FLOAT:
-            case DOUBLE:
-                return 0.0;
-            case BOOLEAN:
-                return false;
-            case STRING:
-                return "";
-            case BYTES:
-                return "";
-            default:
-                return null;
+            case DOUBLE: return 0.0;
+            case BOOLEAN: return false;
+            case STRING: return "";
+            case BYTES: return ByteBuffer.wrap(new byte[0]); // fixed
+            default: return null;
         }
     }
 
@@ -336,6 +355,7 @@ public class KcopHandler extends AbstractHandler {
         for (Field field : tableSchema.getFields()) {
             Object value = data.get(field.name());
             // Convert value to match schema type
+            System.out.println(">>> [KcopHandler] Converting value to match schema type for field " + field.name() + ": " + value);
             Object convertedValue = convertValueToSchemaType(value, field.schema());
             tableRecord.put(field.name(), convertedValue);
         }
@@ -343,44 +363,41 @@ public class KcopHandler extends AbstractHandler {
     }
 
     private Object convertValueToSchemaType(Object value, Schema schema) {
-        if (value == null) {
-            return getDefaultValue(schema);
-        }
-        
+        if (value == null) return getDefaultValue(schema);
         Type type = schema.getType();
         try {
             switch (type) {
                 case INT:
-                    if (value instanceof Number) {
-                        return ((Number) value).intValue();
-                    }
-                    return Integer.parseInt(value.toString());
+                    if (value instanceof Number) return ((Number) value).intValue();
+                    return Integer.valueOf(value.toString().trim());
                 case LONG:
-                    if (value instanceof Number) {
-                        return ((Number) value).longValue();
+                    if (value instanceof Number) return ((Number) value).longValue();
+                    String ls = value.toString().trim();
+                    if (ls.contains(".")) {
+                        double d = Double.parseDouble(ls);
+                        return (long) Math.round(d);
                     }
-                    return Long.parseLong(value.toString());
+                    return Long.valueOf(ls);
                 case FLOAT:
-                    if (value instanceof Number) {
-                        return ((Number) value).floatValue();
-                    }
-                    return Float.parseFloat(value.toString());
+                    if (value instanceof Number) return ((Number) value).floatValue();
+                    return Float.valueOf(value.toString().trim());
                 case DOUBLE:
-                    if (value instanceof Number) {
-                        return ((Number) value).doubleValue();
-                    }
-                    return Double.parseDouble(value.toString());
+                    if (value instanceof Number) return ((Number) value).doubleValue();
+                    return Double.valueOf(value.toString().trim());
                 case STRING:
                     return value.toString();
                 case BYTES:
-                    if (value instanceof byte[]) {
-                        return java.nio.ByteBuffer.wrap((byte[]) value);
+                    if (value instanceof byte[]) return ByteBuffer.wrap((byte[]) value);
+                    if (value instanceof ByteBuffer) return value;
+                    try {
+                        return ByteBuffer.wrap(Base64.getDecoder().decode(value.toString()));
+                    } catch (IllegalArgumentException e) {
+                        return ByteBuffer.wrap(value.toString().getBytes());
                     }
-                    return value.toString();
                 default:
                     return value.toString();
             }
-        } catch (Exception e) {
+        } catch (NumberFormatException e) {
             System.err.println("[KcopHandler] Error converting value " + value + " to type " + type + ": " + e.getMessage());
             return getDefaultValue(schema);
         }
