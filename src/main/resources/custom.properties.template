@@ -1,0 +1,22 @@
+# Exemplo de custom.properties para GoldenGate Java Adapter
+# O Adapter (javawriter) carregará estas configurações e instanciará
+# com.santander.goldengate.handler.KcopHandler
+
+# Classe do handler
+gg.handlerlist=kcoph
+kcoph.type=java
+kcoph.mode=op
+kcoph.handlertype=com.santander.goldengate.handler.KcopHandler
+
+# Parâmetros do handler (mapeiam para Properties em init())
+# Caminho do arquivo Parquet de saída
+kcop.output.file=/ogg/out/kcop-output.parquet
+
+# Schema Avro (uma das duas opções abaixo)
+# 1) via arquivo
+# kcop.avro.schemaFile=/ogg/conf/schema.avsc
+# 2) inline JSON (cuidado com escapes)
+# kcop.avro.schemaJson={"namespace":"com.santander.goldengate","type":"record","name":"KCOPRecord","fields":[{"name":"id","type":["null","int"],"default":null},{"name":"data","type":["null","string"],"default":null}]}
+
+# Compressão do Parquet: SNAPPY | GZIP | UNCOMPRESSED | ZSTD | LZ4
+kcop.parquet.compression=SNAPPY

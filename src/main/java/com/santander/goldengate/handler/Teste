@@ -1,0 +1,210 @@
+package com.santander.goldengate.handler;
+
+import java.util.HashSet;
+import java.util.Set;
+
+import oracle.goldengate.datasource.AbstractHandler;
+import oracle.goldengate.datasource.DsConfiguration;
+import oracle.goldengate.datasource.DsEvent;
+import oracle.goldengate.datasource.DsOperation;
+import oracle.goldengate.datasource.DsRecord;
+import oracle.goldengate.datasource.DsTransaction;
+import oracle.goldengate.datasource.GGDataSource.Status;
+import oracle.goldengate.datasource.meta.ColumnMetaData;
+import oracle.goldengate.datasource.meta.DsMetaData;
+import oracle.goldengate.datasource.meta.TableMetaData;
+import oracle.goldengate.datasource.meta.TableName;
+
+/**
+ * Handler para processar operações do Golden Gate 23.9.x Processa Insert,
+ * Update, Delete de MYAPP1.T1
+ */
+public class KcopHandler extends AbstractHandler {
+
+    private String kafkaProducerConfigFile;
+    private int operationCount = 0;
+    private long lastLogTime = 0;
+    private DsMetaData metaData;
+    private Set<String> processedTables = new HashSet<>();
+
+    public KcopHandler() {
+        System.out.println(">>> [KcopHandler] Constructor called");
+    }
+
+    public void setKafkaProducerConfigFile(String kafkaProducerConfigFile) {
+        this.kafkaProducerConfigFile = kafkaProducerConfigFile;
+        System.out.println(">>> [KcopHandler] kafkaProducerConfigFile set to " + kafkaProducerConfigFile);
+    }
+
+    @Override
+    public void init(DsConfiguration config, DsMetaData metaData) {
+        System.out.println(">>> [KcopHandler] init() called");
+        super.init(config, metaData);
+        this.metaData = metaData;
+        try {
+            if (config != null) {
+                System.out.println(">>> [KcopHandler] Configuration loaded successfully");
+            }
+            if (metaData != null && metaData.getTableNames() != null) {
+                System.out.println(">>> [KcopHandler] Tables: " + metaData.getTableNames());
+            }
+            if (metaData != null && metaData.getSchemaNames() != null) {
+                System.out.println(">>> [KcopHandler] Schemas: " + metaData.getSchemaNames());
+            }
+
+        } catch (Exception ex) {
+            System.err.println("[KcopHandler] Error in init: " + ex.getMessage());
+        }
+    }
+
+    @Override
+    public Status operationAdded(DsEvent event, DsTransaction tx, DsOperation operation) {
+        try {
+            if (operation == null) {
+                return Status.OK;
+            }
+
+            operationCount++;
+            
+            // Print metadata for table on first occurrence
+            if (operation.getTableName() != null) {
+                String tableKey = operation.getTableName().toString();
+                if (!processedTables.contains(tableKey)) {
+                    processedTables.add(tableKey);
+                    printTableMetadata(operation.getTableName());
+                }
+            }
+
+            // Log apenas a cada 100 operações para não poluir o log
+            if (operationCount % 100 == 0) {
+                String tableName = operation.getTableName() != null
+                        ? operation.getTableName().toString() : "UNKNOWN";
+                String opType = operation.getOperationType() != null
+                        ? operation.getOperationType().name() : "UNKNOWN";
+
+                System.out.println(">>> [KcopHandler] Processed " + operationCount
+                        + " operations - Last: Table=" + tableName
+                        + ", Type=" + opType);
+            }
+
+            // Processar a operação
+            processOperation(operation, tx);
+
+            return Status.OK;
+
+        } catch (Exception ex) {
+            System.err.println("[KcopHandler] Error in operationAdded: " + ex.getMessage());
+            ex.printStackTrace();
+            return Status.OK;
+        }
+    }
+
+    /**
+     * Processa cada operação DML
+     */
+    private void processOperation(DsOperation operation, DsTransaction tx) {
+        try {
+            String tableName = operation.getTableName() != null
+                    ? operation.getTableName().toString() : "UNKNOWN";
+
+            if (tx == null) {
+                System.out.println(">>> [KcopHandler] Warning: Transaction is NULL for operation on table " + tableName);
+            }
+            DsRecord record = operation.getRecord();
+
+            if (record != null) {
+
+                record.getColumns().forEach(col -> {
+                    String afterValString = col.getAfterValue();
+                    Object beforeObject = col.getBeforeValue();
+
+                    System.out.println(">>> [KcopHandler] Column: " + col.toString()
+                            + ", Before: " + (beforeObject != null ? beforeObject.toString() : "NULL")
+                            + ", After: " + (afterValString != null ? afterValString : "NULL"));
+                });
+            }
+
+            System.out.println();
+        } catch (Exception ex) {
+            System.err.println("[KcopHandler] Error processing operation: " + ex.getMessage());
+        }
+    }
+
+    @Override
+    public Status transactionCommit(DsEvent event, DsTransaction tx) {
+        try {
+            System.err.println("[KcopHandler] Transaction Commit called");
+            if (tx != null) {
+                System.out.println(">>> [KcopHandler] Transaction Commit -> TranID: " + tx.getTranID());
+            }
+            Object metadata = event.getSource();
+            if (metadata != null) {
+                System.out.println(">>> [KcopHandler] Event Source Metadata: " + metadata.toString());
+            }
+            return Status.OK;
+        } catch (Exception ex) {
+            System.err.println("[KcopHandler] Error in transactionCommit: " + ex.getMessage());
+            return Status.OK;
+        }
+    }
+
+    @Override
+    public void destroy() {
+        System.out.println(">>> [KcopHandler] destroy() called");
+        System.out.println(">>> [KcopHandler] Total operations processed: " + operationCount);
+    }
+
+    @Override
+    public String reportStatus() {
+        String msg = "[KcopHandler] Status = OK (Operations: " + operationCount + ")";
+        System.out.println(">>> " + msg);
+        return msg;
+    }
+
+    private void printTableMetadata(TableName tableName) {
+        try {
+            if (metaData == null) {
+                System.err.println("[KcopHandler] MetaData is null, cannot print table metadata");
+                return;
+            }
+            
+            TableMetaData tableMetaData = metaData.getTableMetaData(tableName);
+            
+            if (tableMetaData != null) {
+                System.out.println("\n>>> [KcopHandler] ===== Metadata for Table: " + tableName + " =====");
+                System.out.println(">>> Schema: " + tableMetaData.getTableName().getSchemaName());
+                System.out.println(">>> Table: " + tableMetaData.getTableName().getShortName());
+                System.out.println(">>> Catalog: " + tableMetaData.getTableName().getCatalogName());
+                
+                // Itera sobre as colunas usando getColumnMetaData()
+                System.out.println(">>> Columns:");
+                int colIndex = 0;
+                ColumnMetaData col;
+                while ((col = tableMetaData.getColumnMetaData(colIndex)) != null) {
+                    System.out.println(">>>   [" + colIndex + "] Name: " + col.getColumnName() 
+                        + ", Type: " + col.getDataType()
+                        + ", Nullable: " + col.isNullable()
+                        + ", Key: " + col.isKeyCol());
+                    colIndex++;
+                }
+                
+                // Mostra colunas chave (PK) - identifica pelos que têm isKeyCol() = true
+                System.out.println(">>> Primary Key Columns:");
+                int pkColIndex = 0;
+                ColumnMetaData pkCol;
+                while ((pkCol = tableMetaData.getColumnMetaData(pkColIndex)) != null) {
+                    if (pkCol.isKeyCol()) {
+                        System.out.println(">>>   " + pkCol.getColumnName());
+                    }
+                    pkColIndex++;
+                }
+                
+                System.out.println(">>> ==========================================\n");
+            }
+        } catch (Exception ex) {
+            System.err.println("[KcopHandler] Error getting table metadata for " + tableName + ": " + ex.getMessage());
+            ex.printStackTrace();
+        }
+    }
+
+}

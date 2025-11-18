@@ -1,0 +1,21 @@
+
+ REPLICAT RKCOP
+ TARGETDB LIBFILE libggjava.so SET property=/u02/deployments/Marketplace/etc/conf/ogg/custom.properties
+ REPORTCOUNT EVERY 1 MINUTES, RATE
+ MAP MYAPP1.*, TARGET KCOP.*;
+
+
+
+
+
+REPLICAT RKCOP
+
+SOURCEDEFS ./dirdef/srcdefs.def
+
+TARGETDB LIBFILE libggjava.so SET property=dirprm/custom.properties
+
+CUSTOMPROPS /u02/deployments/Marketplace/etc/conf/ogg/custom.properties
+
+javawriter.bootoptions = -Xmx512m -Djava.class.path=.:/u01/app/ogg/ggjava/ggjava.jar:/u01/app/santander/KcopHandler01.jar:/u01/app/ogg/opt/DependencyDownloader/dependencies/kafka_3.7.2/*
+
+REPORTCOUNT EVERY 1 MINUTES, RATE

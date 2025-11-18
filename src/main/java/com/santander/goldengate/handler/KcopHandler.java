@@ -1,0 +1,457 @@
+package com.santander.goldengate.handler;
+
+import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+
+import org.apache.avro.Schema;
+import org.apache.avro.Schema.Field;
+import org.apache.avro.Schema.Type;
+import org.apache.avro.generic.GenericData;
+import org.apache.avro.generic.GenericDatumWriter;
+import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.io.BinaryEncoder;
+import org.apache.avro.io.EncoderFactory;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.serialization.ByteArraySerializer;
+import org.apache.kafka.common.serialization.StringSerializer;
+
+import oracle.goldengate.datasource.AbstractHandler;
+import oracle.goldengate.datasource.DsColumn;
+import oracle.goldengate.datasource.DsConfiguration;
+import oracle.goldengate.datasource.DsEvent;
+import oracle.goldengate.datasource.DsOperation;
+import oracle.goldengate.datasource.DsRecord;
+import oracle.goldengate.datasource.DsTransaction;
+import oracle.goldengate.datasource.GGDataSource.Status;
+import oracle.goldengate.datasource.meta.ColumnMetaData;
+import oracle.goldengate.datasource.meta.DsMetaData;
+import oracle.goldengate.datasource.meta.TableMetaData;
+
+/**
+ * Handler para processar operações do GoldenGate (INSERT, UPDATE, DELETE)
+ */
+public class KcopHandler extends AbstractHandler {
+
+    private int operationCount = 0;
+    private String kafkaProducerConfigFile;
+    private DsMetaData metaData;
+    private Map<String, Schema> schemaCache = new HashMap<>();
+    private KafkaProducer<String, byte[]> kafkaProducer;
+
+    public KcopHandler() {
+        System.out.println(">>> [KcopHandler] Constructor called");
+    }
+
+    public void setKafkaProducerConfigFile(String kafkaProducerConfigFile) {
+        this.kafkaProducerConfigFile = kafkaProducerConfigFile;
+        System.out.println(">>> [KcopHandler] kafkaProducerConfigFile set to " + kafkaProducerConfigFile);
+    }
+
+    @Override
+    public void init(DsConfiguration config, DsMetaData metaData) {
+        System.out.println(">>> [KcopHandler] init() called");
+        super.init(config, metaData);
+        this.metaData = metaData;
+        
+        // Initialize Kafka Producer
+        try {
+            Properties kafkaProps = new Properties();
+            if (kafkaProducerConfigFile != null) {
+                kafkaProps.load(new FileInputStream(kafkaProducerConfigFile));
+            } else {
+                // Default properties
+                kafkaProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+                kafkaProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+                kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
+                kafkaProps.put(ProducerConfig.ACKS_CONFIG, "all");
+            }
+            kafkaProducer = new KafkaProducer<>(kafkaProps);
+            System.out.println(">>> [KcopHandler] Kafka Producer initialized");
+        } catch (Exception ex) {
+            System.err.println("[KcopHandler] Error initializing Kafka Producer: " + ex.getMessage());
+            ex.printStackTrace();
+        }
+    }
+
+    @Override
+    public Status operationAdded(DsEvent event, DsTransaction tx, DsOperation operation) {
+        try {
+            if (operation == null) {
+                return Status.OK;
+            }
+
+            operationCount++;
+            if (operationCount % 100 == 0) {
+                System.out.println(">>> [KcopHandler] Processed: " + operationCount);
+            }
+
+            processOperation(operation, tx);
+            return Status.OK;
+
+        } catch (Exception ex) {
+            System.err.println("[KcopHandler] Error in operationAdded: " + ex.getMessage());
+            ex.printStackTrace();
+            return Status.OK;
+        }
+    }
+
+    private void processOperation(DsOperation operation, DsTransaction tx) {
+        if (tx == null) {
+            System.out.println(">>> [KcopHandler] Warning: tx null");
+            return;
+        }
+
+        String table = operation.getTableName() != null ? operation.getTableName().toString() : "UNKNOWN";
+        String opType = operation.getOperationType().name();
+
+        // Get table metadata
+        TableMetaData tableMetaData = null;
+        if (metaData != null && operation.getTableName() != null) {
+            tableMetaData = metaData.getTableMetaData(operation.getTableName());
+        }
+
+        Map<String, Object> beforeImage = new LinkedHashMap<>();
+        Map<String, Object> afterImage = new LinkedHashMap<>();
+
+        DsRecord record = operation.getRecord();
+        if (record == null || record.getColumns() == null) {
+            System.out.println(">>> [KcopHandler] Warning: record/columns null for table " + table);
+        } else {
+            int idx = 0;
+            for (DsColumn c : record.getColumns()) {
+                String columnName = getColumnNameByIndex(idx, tableMetaData);
+
+                Object afterVal = c.hasAfterValue() ? c.getAfterValue() : null;
+                if (afterVal != null) {
+                    afterImage.put(columnName, extractValue(afterVal));
+                }
+
+                Object beforeVal = c.hasBeforeValue() ? c.getBeforeValue() : null;
+                if (beforeVal != null) {
+                    beforeImage.put(columnName, extractValue(beforeVal));
+                }
+
+                idx++;
+            }
+        }
+
+        try {
+            // Build Avro schema (cached per table)
+            Schema avroSchema = getOrCreateAvroSchema(table, tableMetaData);
+            
+            // Create GenericRecord
+            GenericRecord cdcRecord = new GenericData.Record(avroSchema);
+            
+            // Populate beforeImage
+            if (!beforeImage.isEmpty()) {
+                GenericRecord beforeRec = createTableRecord(avroSchema, "beforeImage", beforeImage);
+                cdcRecord.put("beforeImage", beforeRec);
+            } else {
+                cdcRecord.put("beforeImage", null);
+            }
+            
+            // Populate afterImage
+            if (!afterImage.isEmpty()) {
+                GenericRecord afterRec = createTableRecord(avroSchema, "afterImage", afterImage);
+                cdcRecord.put("afterImage", afterRec);
+            } else {
+                cdcRecord.put("afterImage", null);
+            }
+            
+            // Metadata fields - convert all to String
+            cdcRecord.put("A_ENTTYP", opType);
+            cdcRecord.put("A_CCID", tx.getTranID() != null ? tx.getTranID().toString() : null);
+            cdcRecord.put("A_TIMSTAMP", String.valueOf(System.currentTimeMillis()));
+            cdcRecord.put("A_JOBUSER", System.getProperty("user.name"));
+            cdcRecord.put("A_USER", System.getProperty("user.name"));
+            
+            // Serialize to Avro binary
+            byte[] avroBytes = serializeAvro(avroSchema, cdcRecord);
+            
+            // Send to Kafka
+            String topic = "cdc." + table.toLowerCase().replace(".", "_");
+            String key = tx.getTranID().toString(); // Use transaction ID as key
+            
+            ProducerRecord<String, byte[]> producerRecord = new ProducerRecord<>(topic, key, avroBytes);
+            kafkaProducer.send(producerRecord, (metadata, exception) -> {
+                if (exception != null) {
+                    System.err.println("[KcopHandler] Error sending to Kafka: " + exception.getMessage());
+                } else {
+                    System.out.println(">>> [KcopHandler] Sent to Kafka topic=" + metadata.topic() 
+                        + " partition=" + metadata.partition() 
+                        + " offset=" + metadata.offset());
+                }
+            });
+            
+            System.out.println(">>> SCHEMA: " + avroSchema.toString(true));
+            System.out.println(">>> CDC Record: " + cdcRecord);
+            System.out.println(">>> Avro Binary Size: " + avroBytes.length + " bytes");
+            
+        } catch (Exception ex) {
+            System.err.println("[KcopHandler] Error creating Avro record: " + ex.getMessage());
+            ex.printStackTrace();
+        }
+    }
+
+    private Schema getOrCreateAvroSchema(String tableName, TableMetaData tableMetaData) {
+        if (schemaCache.containsKey(tableName)) {
+            return schemaCache.get(tableName);
+        }
+        
+        String namespace = "value." + tableName;
+        String tableRecordName = tableName.contains(".") ? tableName.substring(tableName.lastIndexOf('.') + 1) : tableName;
+        
+        // Build table record schema with proper types
+        List<Field> tableFields = new ArrayList<>();
+        int idx = 0;
+        while (tableMetaData != null) {
+            ColumnMetaData cm = safeGetColumnMetaData(tableMetaData, idx);
+            if (cm == null) break;
+            
+            String colName = cm.getColumnName();
+            Schema colSchema = buildColumnSchema(cm);
+            
+            // Get default value based on type
+            Object defaultValue = getDefaultValue(colSchema);
+            
+            Field field = new Field(colName, colSchema, "", defaultValue);
+            tableFields.add(field);
+            idx++;
+        }
+        
+        Schema tableSchema = Schema.createRecord(tableRecordName, "", namespace, false, tableFields);
+        
+        // Build envelope schema
+        List<Field> envelopeFields = new ArrayList<>();
+        envelopeFields.add(new Field("beforeImage", Schema.createUnion(Schema.create(Type.NULL), tableSchema), "", null));
+        envelopeFields.add(new Field("afterImage", Schema.createUnion(Schema.create(Type.NULL), tableSchema), "", null));
+        envelopeFields.add(new Field("A_ENTTYP", Schema.createUnion(Schema.create(Type.NULL), Schema.create(Type.STRING)), "", null));
+        envelopeFields.add(new Field("A_CCID", Schema.createUnion(Schema.create(Type.NULL), Schema.create(Type.STRING)), "", null));
+        envelopeFields.add(new Field("A_TIMSTAMP", Schema.createUnion(Schema.create(Type.NULL), Schema.create(Type.STRING)), "", null));
+        envelopeFields.add(new Field("A_JOBUSER", Schema.createUnion(Schema.create(Type.NULL), Schema.create(Type.STRING)), "", null));
+        envelopeFields.add(new Field("A_USER", Schema.createUnion(Schema.create(Type.NULL), Schema.create(Type.STRING)), "", null));
+        
+        Schema envelopeSchema = Schema.createRecord("AuditRecord", "", namespace, false, envelopeFields);
+        
+        schemaCache.put(tableName, envelopeSchema);
+        return envelopeSchema;
+    }
+
+    private Schema buildColumnSchema(ColumnMetaData cm) {
+        String colName = cm.getColumnName();
+        String dataTypeName = cm.getDataType() != null ? cm.getDataType().toString().toUpperCase() : "STRING";
+        
+        // Determine base Avro type based on database type
+        Schema baseSchema;
+        String logicalType;
+        
+        if (dataTypeName.contains("NUMBER") || dataTypeName.contains("DECIMAL") || dataTypeName.contains("NUMERIC")) {
+            // For DECIMAL/NUMBER, use long or int based on scale
+            // If has decimal places, could use string; for simplicity using long for integers
+            baseSchema = Schema.create(Type.LONG);
+            logicalType = "DECIMAL";
+        } else if (dataTypeName.contains("INT") || dataTypeName.contains("SMALLINT") || dataTypeName.contains("BIGINT")) {
+            if (dataTypeName.contains("BIGINT")) {
+                baseSchema = Schema.create(Type.LONG);
+            } else {
+                baseSchema = Schema.create(Type.INT);
+            }
+            logicalType = "DECIMAL";
+        } else if (dataTypeName.contains("FLOAT") || dataTypeName.contains("DOUBLE") || dataTypeName.contains("REAL")) {
+            baseSchema = Schema.create(Type.DOUBLE);
+            logicalType = "DOUBLE";
+        } else if (dataTypeName.contains("DATE")) {
+            baseSchema = Schema.create(Type.STRING);
+            logicalType = "DATE";
+        } else if (dataTypeName.contains("TIME")) {
+            baseSchema = Schema.create(Type.STRING);
+            logicalType = dataTypeName.contains("TIMESTAMP") ? "TIMESTAMP" : "TIME";
+        } else if (dataTypeName.contains("CHAR") || dataTypeName.contains("VARCHAR") || dataTypeName.contains("TEXT")) {
+            baseSchema = Schema.create(Type.STRING);
+            logicalType = "CHARACTER";
+        } else if (dataTypeName.contains("BLOB") || dataTypeName.contains("BINARY") || dataTypeName.contains("VARBINARY")) {
+            baseSchema = Schema.create(Type.BYTES);
+            logicalType = "BINARY";
+        } else {
+            // Default to string
+            baseSchema = Schema.create(Type.STRING);
+            logicalType = "CHARACTER";
+        }
+        
+        // Add custom properties to match your example format
+        baseSchema.addProp("logicalType", logicalType);
+        baseSchema.addProp("dbColumnName", colName);
+        
+        // Add precision/scale for numeric types (note: GG API may not expose these easily)
+        if (logicalType.equals("DECIMAL")) {
+            // Try to get precision/scale if available; default values if not
+            baseSchema.addProp("precision", 15); // default
+            baseSchema.addProp("scale", 0);      // default
+        }
+        
+        // Add length for character types
+        if (logicalType.equals("CHARACTER") || logicalType.equals("TIMESTAMP") || logicalType.equals("DATE") || logicalType.equals("TIME")) {
+            // Estimate length; adjust as needed
+            int length = logicalType.equals("TIMESTAMP") ? 32 : (logicalType.equals("DATE") ? 10 : (logicalType.equals("TIME") ? 8 : 255));
+            baseSchema.addProp("length", length);
+        }
+        
+        return baseSchema;
+    }
+
+    private Object getDefaultValue(Schema schema) {
+        Type type = schema.getType();
+        switch (type) {
+            case INT:
+            case LONG:
+                return 0;
+            case FLOAT:
+            case DOUBLE:
+                return 0.0;
+            case BOOLEAN:
+                return false;
+            case STRING:
+                return "";
+            case BYTES:
+                return "";
+            default:
+                return null;
+        }
+    }
+
+    private GenericRecord createTableRecord(Schema envelopeSchema, String fieldName, Map<String, Object> data) {
+        Schema unionSchema = envelopeSchema.getField(fieldName).schema();
+        Schema tableSchema = unionSchema.getTypes().get(1); // Get non-null type from union
+        
+        GenericRecord tableRecord = new GenericData.Record(tableSchema);
+        for (Field field : tableSchema.getFields()) {
+            Object value = data.get(field.name());
+            // Convert value to match schema type
+            Object convertedValue = convertValueToSchemaType(value, field.schema());
+            tableRecord.put(field.name(), convertedValue);
+        }
+        return tableRecord;
+    }
+
+    private Object convertValueToSchemaType(Object value, Schema schema) {
+        if (value == null) {
+            return getDefaultValue(schema);
+        }
+        
+        Type type = schema.getType();
+        try {
+            switch (type) {
+                case INT:
+                    if (value instanceof Number) {
+                        return ((Number) value).intValue();
+                    }
+                    return Integer.parseInt(value.toString());
+                case LONG:
+                    if (value instanceof Number) {
+                        return ((Number) value).longValue();
+                    }
+                    return Long.parseLong(value.toString());
+                case FLOAT:
+                    if (value instanceof Number) {
+                        return ((Number) value).floatValue();
+                    }
+                    return Float.parseFloat(value.toString());
+                case DOUBLE:
+                    if (value instanceof Number) {
+                        return ((Number) value).doubleValue();
+                    }
+                    return Double.parseDouble(value.toString());
+                case STRING:
+                    return value.toString();
+                case BYTES:
+                    if (value instanceof byte[]) {
+                        return java.nio.ByteBuffer.wrap((byte[]) value);
+                    }
+                    return value.toString();
+                default:
+                    return value.toString();
+            }
+        } catch (Exception e) {
+            System.err.println("[KcopHandler] Error converting value " + value + " to type " + type + ": " + e.getMessage());
+            return getDefaultValue(schema);
+        }
+    }
+
+    private byte[] serializeAvro(Schema schema, GenericRecord record) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        BinaryEncoder encoder = EncoderFactory.get().binaryEncoder(out, null);
+        GenericDatumWriter<GenericRecord> writer = new GenericDatumWriter<>(schema);
+        writer.write(record, encoder);
+        encoder.flush();
+        out.close();
+        return out.toByteArray();
+    }
+
+    private String getColumnNameByIndex(int index, TableMetaData tableMetaData) {
+        try {
+            ColumnMetaData colMeta = safeGetColumnMetaData(tableMetaData, index);
+            if (colMeta != null) {
+                return colMeta.getColumnName();
+            }
+        } catch (Exception e) {
+            System.err.println("[KcopHandler] Error getting column name at index " + index + ": " + e.getMessage());
+        }
+        return "COL_" + index;
+    }
+
+    private Object extractValue(Object value) {
+        try {
+            if (value == null) return null;
+            if (value instanceof byte[]) {
+                return Base64.getEncoder().encodeToString((byte[]) value);
+            }
+            return value;
+        } catch (Exception ignore) {
+            return null;
+        }
+    }
+
+    @Override
+    public Status transactionCommit(DsEvent event, DsTransaction tx) {
+        if (tx != null) {
+            System.out.println(">>> [KcopHandler] COMMIT TX=" + tx.getTranID());
+        }
+        return Status.OK;
+    }
+
+    @Override
+    public void destroy() {
+        System.out.println(">>> [KcopHandler] destroy() called");
+        System.out.println(">>> [KcopHandler] Total operations processed: " + operationCount);
+        
+        if (kafkaProducer != null) {
+            kafkaProducer.flush();
+            kafkaProducer.close();
+            System.out.println(">>> [KcopHandler] Kafka Producer closed");
+        }
+    }
+
+    @Override
+    public String reportStatus() {
+        return "[KcopHandler] OK (Processed: " + operationCount + ")";
+    }
+
+    // Safe access to metadata column by index, returns null when out-of-range or on error
+    private ColumnMetaData safeGetColumnMetaData(TableMetaData tableMetaData, int index) {
+        if (tableMetaData == null || index < 0) return null;
+        try {
+            return tableMetaData.getColumnMetaData(index);
+        } catch (IndexOutOfBoundsException ex) {
+            return null;
+        }
+    }
+}

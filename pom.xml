@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.santander</groupId>
+    <artifactId>golden-gate-kcop-handler</artifactId>
+    <version>1.0.0</version>
+    <name>GoldenGate KCOP Handler</name>
+
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <ogg.version>21.9.0</ogg.version>
+        <ogg.home>/Users/dpecoraro/Downloads</ogg.home>
+    </properties>
+
+    <dependencies>
+        <!-- Dependência obrigatória: Oracle GoldenGate Java API -->
+        <!-- Como o JAR não está em repositório público, usamos systemPath -->
+        <dependency>
+            <groupId>com.oracle.goldengate</groupId>
+            <artifactId>ggjava</artifactId>
+            <version>21.9.0</version>
+            <scope>system</scope>
+            <systemPath>${ogg.home}/ggjava.jar</systemPath>
+        </dependency>
+
+        <dependency>
+            <groupId>com.oracle.goldengate</groupId>
+            <artifactId>ggdbutil</artifactId>
+            <version>23.9.2.25.10.001</version>
+            <scope>system</scope>
+            <systemPath>${ogg.home}/ggdbutil-23.9.2.25.10.001.jar</systemPath>
+        </dependency>
+        <!-- Apache Commons Codec for Base32 encoding -->
+        <dependency>
+            <groupId>commons-codec</groupId>
+            <artifactId>commons-codec</artifactId>
+            <version>1.15</version>
+        </dependency>
+        <!-- Apache Avro -->
+        <dependency>
+            <groupId>org.apache.avro</groupId>
+            <artifactId>avro</artifactId>
+            <version>1.11.3</version>
+        </dependency>
+        <!-- Kafka Client -->
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-clients</artifactId>
+            <version>3.6.0</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>KcopHandler01</finalName>
+        <plugins>
+            <!-- Compilador Java -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <source>${maven.compiler.source}</source>
+                    <target>${maven.compiler.target}</target>
+                    <encoding>UTF-8</encoding>
+                </configuration>
+            </plugin>
+
+            <!-- Empacotamento do handler -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <version>3.6.0</version>
+                <configuration>
+                    <descriptorRefs>
+                        <descriptorRef>jar-with-dependencies</descriptorRef>
+                    </descriptorRefs>
+                    <archive>
+                        <manifest>
+                            <!-- Não é executável, mas definimos uma mainClass simbólica -->
+                            <mainClass>com.santander.goldengate.handler.KcopHandler</mainClass>
+                        </manifest>
+                    </archive>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>make-assembly</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
