@@ -49,6 +49,7 @@ public class KcopHandler extends AbstractHandler {
     private DsMetaData metaData;
     private Map<String, Schema> schemaCache = new HashMap<>();
     private KafkaProducer<String, byte[]> kafkaProducer;
+    private String topicMappingTemplate; // added
 
     public KcopHandler() {
         System.out.println(">>> [KcopHandler] Constructor called");
@@ -79,11 +80,18 @@ public class KcopHandler extends AbstractHandler {
                 kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
                 kafkaProps.put(ProducerConfig.ACKS_CONFIG, "all");
             }
+            // Read topic template from properties (Replicat/handler properties)
+            this.topicMappingTemplate = kafkaProps.getProperty(
+                "gg.handler.kafkahandler.topicMappingTemplate"
+            );
             // Force correct serializers (avoid external misconfiguration)
             kafkaProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
             kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
             kafkaProducer = new KafkaProducer<>(kafkaProps);
             System.out.println(">>> [KcopHandler] Kafka Producer initialized");
+            if (topicMappingTemplate != null) {
+                System.out.println(">>> [KcopHandler] Topic template: " + topicMappingTemplate);
+            }
         } catch (Exception ex) {
             System.err.println("[KcopHandler] Error initializing Kafka Producer: " + ex.getMessage());
             ex.printStackTrace();
@@ -192,10 +200,12 @@ public class KcopHandler extends AbstractHandler {
                 return;
             }
 
-            String topic = "cdc." + table.toLowerCase().replace(".", "_");
-            String key = tx.getTranID().toString(); // Use transaction ID as key
+            String fullyQualifiedTableName = table; 
+            String topic = resolveTopic(topicMappingTemplate, fullyQualifiedTableName);
+            String key = tx.getTranID().toString(); 
             
             ProducerRecord<String, byte[]> producerRecord = new ProducerRecord<>(topic, key, avroBytes);
+            System.out.println(">>> Syso before sending to Kafka");
             kafkaProducer.send(producerRecord, (metadata, exception) -> {
                 if (exception != null) {
                     System.err.println("[KcopHandler] Error sending to Kafka: " + exception.getMessage());
@@ -470,5 +480,14 @@ public class KcopHandler extends AbstractHandler {
         } catch (IndexOutOfBoundsException ex) {
             return null;
         }
+    }
+
+    // Resolve topic from template; fallback keeps previous behavior if template is missing
+    private String resolveTopic(String template, String fullyQualifiedTableName) {
+        if (template == null || template.isEmpty()) {
+            // fallback to previous default if no template provided
+            return "cdc." + fullyQualifiedTableName.toLowerCase().replace(".", "_");
+        }
+        return template.replace("${fullyQualifiedTableName}", fullyQualifiedTableName);
     }
 }
