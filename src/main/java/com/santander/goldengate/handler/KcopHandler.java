@@ -50,6 +50,7 @@ public class KcopHandler extends AbstractHandler {
     private Map<String, Schema> schemaCache = new HashMap<>();
     private KafkaProducer<String, byte[]> kafkaProducer;
     private String topicMappingTemplate; 
+    private String kafkaBootstrapServers; // added
 
     public KcopHandler() {
         System.out.println(">>> [KcopHandler] Constructor called");
@@ -82,14 +83,15 @@ public class KcopHandler extends AbstractHandler {
                 kafkaProps.put(ProducerConfig.ACKS_CONFIG, "all");
             }
             // Read topic template from properties (Replicat/handler properties)
-            this.topicMappingTemplate = kafkaProps.getProperty(
-                "gg.handler.kafkahandler.topicMappingTemplate"
-            );
+            this.topicMappingTemplate = kafkaProps.getProperty("gg.handler.kafkahandler.topicMappingTemplate");
+            // Capture bootstrap servers for logging
+            this.kafkaBootstrapServers = kafkaProps.getProperty(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
             // Force correct serializers (avoid external misconfiguration)
             kafkaProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
             kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
             kafkaProducer = new KafkaProducer<>(kafkaProps);
             System.out.println(">>> [KcopHandler] Kafka Producer initialized");
+            System.out.println(">>> [KcopHandler] Kafka bootstrap.servers: " + kafkaBootstrapServers); // added
             if (topicMappingTemplate != null) {
                 System.out.println(">>> [KcopHandler] Topic template: " + topicMappingTemplate);
             }
@@ -206,12 +208,16 @@ public class KcopHandler extends AbstractHandler {
             String key = tx.getTranID().toString(); 
             
             ProducerRecord<String, byte[]> producerRecord = new ProducerRecord<>(topic, key, avroBytes);
-            System.out.println(">>> Syso before sending to Kafka");
+            // log server + topic before sending
+            System.out.println(">>> [KcopHandler] Sending to Kafka bootstrap=" + kafkaBootstrapServers 
+                + " topic=" + topic + " key=" + key + " size=" + avroBytes.length + "B"); // added
+
             kafkaProducer.send(producerRecord, (metadata, exception) -> {
                 if (exception != null) {
                     System.err.println("[KcopHandler] Error sending to Kafka: " + exception.getMessage());
                 } else {
-                    System.out.println(">>> [KcopHandler] Sent to Kafka topic=" + metadata.topic() 
+                    System.out.println(">>> [KcopHandler] Sent to Kafka bootstrap=" + kafkaBootstrapServers
+                        + " topic=" + metadata.topic() 
                         + " partition=" + metadata.partition() 
                         + " offset=" + metadata.offset());
                 }
