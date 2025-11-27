@@ -1,15 +1,25 @@
 package com.santander.goldengate.handler;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
-import java.nio.ByteBuffer; // added
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -50,7 +60,10 @@ public class KcopHandler extends AbstractHandler {
     private Map<String, Schema> schemaCache = new HashMap<>();
     private KafkaProducer<String, byte[]> kafkaProducer;
     private String topicMappingTemplate; 
-    private String kafkaBootstrapServers; // added
+    private String kafkaBootstrapServers;
+    // Schema Registry (multi-URL)
+    private List<String> schemaRegistryUrls = new ArrayList<>();
+    private final Set<String> registeredSubjects = new HashSet<>();
 
     public KcopHandler() {
         System.out.println(">>> [KcopHandler] Constructor called");
@@ -84,16 +97,33 @@ public class KcopHandler extends AbstractHandler {
             }
             // Read topic template from properties (Replicat/handler properties)
             this.topicMappingTemplate = kafkaProps.getProperty("gg.handler.kafkahandler.topicMappingTemplate");
-            // Capture bootstrap servers for logging
             this.kafkaBootstrapServers = kafkaProps.getProperty(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+
+            // Read Schema Registry URLs (value first, then key) and split by comma
+            String valueUrls = kafkaProps.getProperty("value.converter.schema.registry.url");
+            String keyUrls = kafkaProps.getProperty("key.converter.schema.registry.url");
+            String rawUrls = (valueUrls != null && !valueUrls.isEmpty()) ? valueUrls : keyUrls;
+
+            if (rawUrls != null && !rawUrls.isEmpty()) {
+                for (String u : rawUrls.split(",")) {
+                    String trimmed = u.trim();
+                    if (!trimmed.isEmpty()) schemaRegistryUrls.add(trimmed);
+                }
+            }
+
             // Force correct serializers (avoid external misconfiguration)
             kafkaProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
             kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
             kafkaProducer = new KafkaProducer<>(kafkaProps);
             System.out.println(">>> [KcopHandler] Kafka Producer initialized");
-            System.out.println(">>> [KcopHandler] Kafka bootstrap.servers: " + kafkaBootstrapServers); // added
+            System.out.println(">>> [KcopHandler] Kafka bootstrap.servers: " + kafkaBootstrapServers);
             if (topicMappingTemplate != null) {
                 System.out.println(">>> [KcopHandler] Topic template: " + topicMappingTemplate);
+            }
+            if (!schemaRegistryUrls.isEmpty()) {
+                System.out.println(">>> [KcopHandler] Schema Registry URLs: " + String.join(", ", schemaRegistryUrls));
+            } else {
+                System.out.println(">>> [KcopHandler] Schema Registry URLs not configured; skipping registration.");
             }
         } catch (Exception ex) {
             System.err.println("[KcopHandler] Error initializing Kafka Producer: " + ex.getMessage());
@@ -132,12 +162,12 @@ public class KcopHandler extends AbstractHandler {
         String table = operation.getTableName() != null ? operation.getTableName().toString() : "UNKNOWN";
         String opType = operation.getOperationType().name();
 
-        System.out.println(">>> [KcopHandler] Retrieved metadata for table " + table); 
+        //System.out.println(">>> [KcopHandler] Retrieved metadata for table " + table); 
         // Get table metadata
         TableMetaData tableMetaData = null;
         if (metaData != null && operation.getTableName() != null) {
             tableMetaData = metaData.getTableMetaData(operation.getTableName());
-            System.out.println(">>> [KcopHandler] Retrieved metadata: " + tableMetaData); 
+            //System.out.println(">>> [KcopHandler] Retrieved metadata: " + tableMetaData); 
         }
 
         Map<String, Object> beforeImage = new LinkedHashMap<>();
@@ -206,11 +236,14 @@ public class KcopHandler extends AbstractHandler {
             String fullyQualifiedTableName = table; 
             String topic = resolveTopic(topicMappingTemplate, fullyQualifiedTableName);
             String key = tx.getTranID().toString(); 
-            
+
+            // Register schema (subject = <topic>-value) against first working registry
+            String subject = topic + "-value";
+            ensureSchemaRegistered(subject, avroSchema);
+
             ProducerRecord<String, byte[]> producerRecord = new ProducerRecord<>(topic, key, avroBytes);
-            // log server + topic before sending
             System.out.println(">>> [KcopHandler] Sending to Kafka bootstrap=" + kafkaBootstrapServers 
-                + " topic=" + topic + " key=" + key + " size=" + avroBytes.length + "B"); // added
+                + " topic=" + topic + " key=" + key + " size=" + avroBytes.length + "B");
 
             kafkaProducer.send(producerRecord, (metadata, exception) -> {
                 if (exception != null) {
@@ -233,8 +266,85 @@ public class KcopHandler extends AbstractHandler {
         }
     }
 
+    // Ensure schema is registered once per subject
+    private void ensureSchemaRegistered(String subject, Schema schema) {
+        if (schema == null || subject == null || schemaRegistryUrls.isEmpty()) return;
+        if (registeredSubjects.contains(subject)) return;
+        try {
+            int id = registerSchema(subject, schema);
+            if (id > 0) {
+                registeredSubjects.add(subject);
+                System.out.println(">>> [KcopHandler] Registered schema subject=" + subject + " id=" + id);
+            } else {
+                System.out.println(">>> [KcopHandler] Schema registration returned no id for subject=" + subject);
+            }
+        } catch (Exception e) {
+            System.err.println("[KcopHandler] Failed to register schema for subject=" + subject + ": " + e.getMessage());
+        }
+    }
+
+    // Try all configured registries until one succeeds
+    private int registerSchema(String subject, Schema schema) throws Exception {
+        Exception last = null;
+        for (String base : schemaRegistryUrls) {
+            try {
+                int id = postSchemaToRegistry(base, subject, schema);
+                if (id > 0) return id;
+            } catch (Exception e) {
+                last = e;
+                System.err.println("[KcopHandler] Schema Registry POST failed for " + base + ": " + e.getMessage());
+            }
+        }
+        if (last != null) throw last;
+        return 0;
+    }
+
+    // POST {"schema":"<json>"} to /subjects/{subject}/versions
+    private int postSchemaToRegistry(String baseUrl, String subject, Schema schema) throws Exception {
+        String endpoint = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
+        endpoint += "subjects/" + URLEncoder.encode(subject, "UTF-8") + "/versions";
+        
+        System.out.println(">>> [KcopHandler] Registering schema to " + endpoint);
+
+        String schemaJson = schema.toString();
+        String escaped = schemaJson.replace("\\", "\\\\").replace("\"", "\\\"");
+        String payload = "{\"schema\":\"" + escaped + "\"}";
+
+        URL url = new URL(endpoint);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setConnectTimeout(5000);
+        conn.setReadTimeout(10000);
+        conn.setDoOutput(true);
+        conn.setRequestProperty("Content-Type", "application/vnd.schemaregistry.v1+json");
+        conn.setRequestProperty("Accept", "application/vnd.schemaregistry.v1+json");
+
+        try (OutputStream os = conn.getOutputStream()) {
+            os.write(payload.getBytes(StandardCharsets.UTF_8));
+        }
+
+        int code = conn.getResponseCode();
+        InputStream is = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
+        StringBuilder sb = new StringBuilder();
+        if (is != null) {
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = br.readLine()) != null) sb.append(line);
+            }
+        }
+        String body = sb.toString();
+        if (code >= 200 && code < 300) {
+            System.out.println(">>> [KcopHandler] Schema Registry response: " + body);
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"id\"\\s*:\\s*(\\d+)").matcher(body);
+            if (m.find()) return Integer.parseInt(m.group(1));
+            return 0;
+        } else {
+            throw new RuntimeException("Schema Registry error (" + code + "): " + body);
+        }
+    }
+
     private Schema getOrCreateAvroSchema(String tableName, TableMetaData tableMetaData) {
-        System.out.println(">>> [KcopHandler] Generating Avro schema for table " + tableName);
+        //System.out.println(">>> [KcopHandler] Generating Avro schema for table " + tableName);
         if (schemaCache.containsKey(tableName)) {
             return schemaCache.get(tableName);
         }
@@ -279,9 +389,10 @@ public class KcopHandler extends AbstractHandler {
     }
 
     private Schema buildColumnSchema(ColumnMetaData cm) {
-        System.out.println(">>> [KcopHandler] Building column schema for column " + cm.getColumnName() 
+        /*System.out.println(">>> [KcopHandler] Building column schema for column " + cm.getColumnName() 
         + " with data type " 
-        + cm.getDataType());
+        + cm.getDataType()); */
+        
         String colName = cm.getColumnName();
         String dataTypeName = cm.getDataType() != null ? cm.getDataType().toString().toUpperCase() : "STRING";
         String dataTypeRaw  = cm.getDataType() != null ? cm.getDataType().toString() : "";
@@ -456,16 +567,16 @@ public class KcopHandler extends AbstractHandler {
 
     @Override
     public Status transactionCommit(DsEvent event, DsTransaction tx) {
-        if (tx != null) {
+        /*if (tx != null) {
             System.out.println(">>> [KcopHandler] COMMIT TX=" + tx.getTranID());
-        }
+        }*/
         return Status.OK;
     }
 
     @Override
     public void destroy() {
         System.out.println(">>> [KcopHandler] destroy() called");
-        System.out.println(">>> [KcopHandler] Total operations processed: " + operationCount);
+        //System.out.println(">>> [KcopHandler] Total operations processed: " + operationCount);
         
         if (kafkaProducer != null) {
             kafkaProducer.flush();
