@@ -49,7 +49,7 @@ public class KcopHandler extends AbstractHandler {
     private DsMetaData metaData;
     private Map<String, Schema> schemaCache = new HashMap<>();
     private KafkaProducer<String, byte[]> kafkaProducer;
-    private String topicMappingTemplate; // added
+    private String topicMappingTemplate; 
 
     public KcopHandler() {
         System.out.println(">>> [KcopHandler] Constructor called");
@@ -72,6 +72,7 @@ public class KcopHandler extends AbstractHandler {
             if (kafkaProducerConfigFile != null) {
                 try (FileInputStream fis = new FileInputStream(kafkaProducerConfigFile)) {
                     kafkaProps.load(fis);
+                    System.out.println(">>> [KcopHandler] Loaded Kafka producer properties from " + kafkaProducerConfigFile);
                 }
             } else {
                 // Default properties
