@@ -35,7 +35,6 @@ public class AvroSchemaManager {
         Schema cached = schemaCache.get(tableName);
         if (cached != null) return cached;
 
-        final String namespace = computeNamespace(tableName);
         final String tableRecordName = tableName != null && tableName.contains(".")
                 ? tableName.substring(tableName.lastIndexOf('.') + 1)
                 : tableName;
@@ -55,7 +54,7 @@ public class AvroSchemaManager {
             }
         }
 
-        Schema tableSchema = Schema.createRecord(tableRecordName, "", namespace, false, tableFields);
+        Schema tableSchema = Schema.createRecord(tableRecordName, "", namespacePrefix, false, tableFields);
 
         // Build envelope schema using a helper to create nullable unions
         List<Field> envelopeFields = new ArrayList<>();
@@ -67,7 +66,7 @@ public class AvroSchemaManager {
         envelopeFields.add(nullableUnionField("A_JOBUSER", Schema.create(Type.STRING)));
         envelopeFields.add(nullableUnionField("A_USER", Schema.create(Type.STRING)));
 
-        Schema envelopeSchema = Schema.createRecord("AuditRecord", "", namespace, false, envelopeFields);
+        Schema envelopeSchema = Schema.createRecord("AuditRecord", "", namespacePrefix, false, envelopeFields);
         schemaCache.put(tableName, envelopeSchema);
         return envelopeSchema;
     }
@@ -75,15 +74,6 @@ public class AvroSchemaManager {
     private Field nullableUnionField(String name, Schema nonNullSchema) {
         Schema union = Schema.createUnion(Schema.create(Type.NULL), nonNullSchema);
         return new Field(name, union, "", null);
-    }
-
-    private String computeNamespace(String tableName) {
-        if (tableName == null || tableName.isEmpty()) return namespacePrefix;
-        String[] parts = tableName.split("\\.");
-        // Expecting DB.SCHEMA.TABLE; fall back gracefully
-        if (parts.length >= 3) return namespacePrefix + "." + parts[0] + "." + parts[1];
-        if (parts.length == 2) return namespacePrefix + "." + parts[0] + "." + parts[1];
-        return namespacePrefix + "." + tableName;
     }
 
     private Schema buildColumnSchema(ColumnMetaData cm) {

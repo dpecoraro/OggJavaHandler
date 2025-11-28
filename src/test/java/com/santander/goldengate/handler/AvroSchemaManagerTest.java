@@ -20,7 +20,7 @@ public class AvroSchemaManagerTest {
         // Pass null metadata to avoid GoldenGate dependencies in tests
         Schema envelope = mgr.getOrCreateAvroSchema("ORAPR835.BALP.AEDT074", null);
 
-        assertEquals("value.SOURCEDB.ORAPR835.BALP", envelope.getNamespace());
+        assertEquals("value.SOURCEDB", envelope.getNamespace());
         assertEquals("AuditRecord", envelope.getName());
 
         Field before = envelope.getField("beforeImage");

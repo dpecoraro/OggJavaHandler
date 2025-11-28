@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="com.santander.goldengate.handler.AvroSchemaManagerTest" time="0.09" tests="3" errors="0" skipped="0" failures="0">
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="com.santander.goldengate.handler.AvroSchemaManagerTest" time="0.076" tests="3" errors="0" skipped="0" failures="0">
   <properties>
     <property name="gopherProxySet" value="false"/>
     <property name="awt.toolkit" value="sun.lwawt.macosx.LWCToolkit"/>
@@ -16,7 +16,7 @@
     <property name="sun.java.launcher" value="SUN_STANDARD"/>
     <property name="user.country" value="BR"/>
     <property name="sun.boot.library.path" value="/Users/dpecoraro/.sdkman/candidates/java/11.0.14.1-jbr/lib"/>
-    <property name="sun.java.command" value="/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/surefire/surefirebooter-20251128131625268_3.jar /Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/surefire 2025-11-28T13-16-25_232-jvmRun1 surefire-20251128131625268_1tmp surefire_0-20251128131625268_2tmp"/>
+    <property name="sun.java.command" value="/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/surefire/surefirebooter-20251128145934612_3.jar /Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/surefire 2025-11-28T14-59-34_574-jvmRun1 surefire-20251128145934612_1tmp surefire_0-20251128145934612_2tmp"/>
     <property name="jdk.debug" value="release"/>
     <property name="surefire.test.class.path" value="/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/test-classes:/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/classes:/Users/dpecoraro/Downloads/ggjava.jar:/Users/dpecoraro/Downloads/ggdbutil-23.9.2.25.10.001.jar:/Users/dpecoraro/.m2/repository/commons-codec/commons-codec/1.15/commons-codec-1.15.jar:/Users/dpecoraro/.m2/repository/org/apache/avro/avro/1.11.3/avro-1.11.3.jar:/Users/dpecoraro/.m2/repository/com/fasterxml/jackson/core/jackson-core/2.14.2/jackson-core-2.14.2.jar:/Users/dpecoraro/.m2/repository/com/fasterxml/jackson/core/jackson-databind/2.14.2/jackson-databind-2.14.2.jar:/Users/dpecoraro/.m2/repository/com/fasterxml/jackson/core/jackson-annotations/2.14.2/jackson-annotations-2.14.2.jar:/Users/dpecoraro/.m2/repository/org/apache/commons/commons-compress/1.22/commons-compress-1.22.jar:/Users/dpecoraro/.m2/repository/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.jar:/Users/dpecoraro/.m2/repository/org/apache/kafka/kafka-clients/3.6.0/kafka-clients-3.6.0.jar:/Users/dpecoraro/.m2/repository/com/github/luben/zstd-jni/1.5.5-1/zstd-jni-1.5.5-1.jar:/Users/dpecoraro/.m2/repository/org/lz4/lz4-java/1.8.0/lz4-java-1.8.0.jar:/Users/dpecoraro/.m2/repository/org/xerial/snappy/snappy-java/1.1.10.4/snappy-java-1.1.10.4.jar:/Users/dpecoraro/.m2/repository/org/junit/jupiter/junit-jupiter-api/5.10.1/junit-jupiter-api-5.10.1.jar:/Users/dpecoraro/.m2/repository/org/opentest4j/opentest4j/1.3.0/opentest4j-1.3.0.jar:/Users/dpecoraro/.m2/repository/org/junit/platform/junit-platform-commons/1.10.1/junit-platform-commons-1.10.1.jar:/Users/dpecoraro/.m2/repository/org/apiguardian/apiguardian-api/1.1.2/apiguardian-api-1.1.2.jar:/Users/dpecoraro/.m2/repository/org/junit/jupiter/junit-jupiter-engine/5.10.1/junit-jupiter-engine-5.10.1.jar:/Users/dpecoraro/.m2/repository/org/junit/platform/junit-platform-engine/1.10.1/junit-platform-engine-1.10.1.jar:/Users/dpecoraro/.m2/repository/org/mockito/mockito-core/5.12.0/mockito-core-5.12.0.jar:/Users/dpecoraro/.m2/repository/net/bytebuddy/byte-buddy/1.14.15/byte-buddy-1.14.15.jar:/Users/dpecoraro/.m2/repository/net/bytebuddy/byte-buddy-agent/1.14.15/byte-buddy-agent-1.14.15.jar:/Users/dpecoraro/.m2/repository/org/objenesis/objenesis/3.3/objenesis-3.3.jar:"/>
     <property name="sun.cpu.endian" value="little"/>
@@ -32,7 +32,7 @@
     <property name="java.specification.name" value="Java Platform API Specification"/>
     <property name="java.vm.specification.vendor" value="Oracle Corporation"/>
     <property name="java.awt.graphicsenv" value="sun.awt.CGraphicsEnvironment"/>
-    <property name="surefire.real.class.path" value="/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/surefire/surefirebooter-20251128131625268_3.jar"/>
+    <property name="surefire.real.class.path" value="/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/surefire/surefirebooter-20251128145934612_3.jar"/>
     <property name="sun.management.compiler" value="HotSpot 64-Bit Tiered Compilers"/>
     <property name="java.runtime.version" value="11.0.14.1+1-b2043.11"/>
     <property name="user.name" value="dpecoraro"/>
@@ -58,12 +58,12 @@
     <property name="sun.io.unicode.encoding" value="UnicodeBig"/>
     <property name="java.class.version" value="55.0"/>
   </properties>
-  <testcase name="testSerializeAvroNotEmpty" classname="com.santander.goldengate.handler.AvroSchemaManagerTest" time="0.074">
+  <testcase name="testSerializeAvroNotEmpty" classname="com.santander.goldengate.handler.AvroSchemaManagerTest" time="0.07">
     <system-err><![CDATA[SLF4J: Failed to load class "org.slf4j.impl.StaticLoggerBinder".
 SLF4J: Defaulting to no-operation (NOP) logger implementation
 SLF4J: See http://www.slf4j.org/codes.html#StaticLoggerBinder for further details.
 ]]></system-err>
   </testcase>
-  <testcase name="testComputeNamespaceAndEnvelope" classname="com.santander.goldengate.handler.AvroSchemaManagerTest" time="0.002"/>
-  <testcase name="testSchemaCaching" classname="com.santander.goldengate.handler.AvroSchemaManagerTest" time="0.001"/>
+  <testcase name="testComputeNamespaceAndEnvelope" classname="com.santander.goldengate.handler.AvroSchemaManagerTest" time="0.001"/>
+  <testcase name="testSchemaCaching" classname="com.santander.goldengate.handler.AvroSchemaManagerTest" time="0.0"/>
 </testsuite>
