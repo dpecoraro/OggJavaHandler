@@ -1,6 +1,7 @@
 package com.santander.goldengate.handler;
 
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -100,7 +101,7 @@ public class KcopHandler extends AbstractHandler {
             }
             // Optional debug flag from properties
             this.debugLogs = Boolean.parseBoolean(kafkaProps.getProperty("gg.handler.kafkahandler.debugLogs", "false"));
-        } catch (Exception ex) {
+        } catch (IOException | NoSuchAttributeException ex) {
             System.err.println("[KcopHandler] Error initializing Kafka Producer: " + ex.getMessage());
         }
     }
