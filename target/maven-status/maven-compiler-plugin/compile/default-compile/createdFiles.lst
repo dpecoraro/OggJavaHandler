@@ -1,2 +1,7 @@
+com/santander/goldengate/handler/kafka/KafkaPublisherImpl.class
+com/santander/goldengate/handler/AvroSchemaManager.class
 com/santander/goldengate/handler/KcopHandler$1.class
 com/santander/goldengate/handler/KcopHandler.class
+com/santander/goldengate/handler/kafka/KafkaPublisher.class
+com/santander/goldengate/handler/AvroSchemaManager$1.class
+com/santander/goldengate/handler/SchemaRegistryClient.class

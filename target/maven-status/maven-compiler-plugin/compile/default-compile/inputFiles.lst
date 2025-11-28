@@ -1,1 +1,5 @@
 /Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/src/main/java/com/santander/goldengate/handler/KcopHandler.java
+/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/src/main/java/com/santander/goldengate/handler/kafka/KafkaPublisher.java
+/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/src/main/java/com/santander/goldengate/handler/kafka/KafkaPublisherImpl.java
+/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/src/main/java/com/santander/goldengate/handler/SchemaRegistryClient.java
+/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/src/main/java/com/santander/goldengate/handler/AvroSchemaManager.java
