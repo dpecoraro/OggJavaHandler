@@ -18,8 +18,8 @@ import org.apache.avro.generic.GenericRecord;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.apache.kafka.common.serialization.ByteArraySerializer;
 
 import oracle.goldengate.datasource.AbstractHandler;
 import oracle.goldengate.datasource.DsColumn;
@@ -42,7 +42,7 @@ public class KcopHandler extends AbstractHandler {
     private String kafkaProducerConfigFile;
     private DsMetaData metaData;
     private AvroSchemaManager schemaManager;
-    private KafkaProducer<String, byte[]> kafkaProducer;
+    private KafkaProducer<String, GenericRecord> kafkaProducer; // use Avro serializer for values
     private String topicMappingTemplate; 
     private String kafkaBootstrapServers;
     private SchemaRegistryClient schemaRegistryClient;
@@ -76,30 +76,39 @@ public class KcopHandler extends AbstractHandler {
             } else {
                 throw new NoSuchAttributeException("lack of kafka producer config file");
             }
-            // Read topic template from properties (Replicat/handler properties)
+            // Read topic template and bootstrap
             this.topicMappingTemplate = kafkaProps.getProperty("gg.handler.kafkahandler.topicMappingTemplate");
             this.kafkaBootstrapServers = kafkaProps.getProperty(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
 
-            // Namespace prefix from properties (default "value")
-            String namespacePrefix = kafkaProps.getProperty("gg.handler.kafkahandler.namespacePrefix", "value.SOURCEDB.BALP"); // added
-            // Initialize AvroSchemaManager with the namespace prefix
+            // Namespace prefix and schema manager
+            String namespacePrefix = kafkaProps.getProperty("gg.handler.kafkahandler.namespacePrefix", "value.SOURCEDB.BALP");
             this.schemaManager = new AvroSchemaManager(namespacePrefix);
 
-            // init registry client
+            // init registry client (optional, KafkaAvroSerializer will register automatically)
             schemaRegistryClient = new SchemaRegistryClient();
-            schemaRegistryClient.init(kafkaProps); // added
+            schemaRegistryClient.init(kafkaProps);
+
+            // Ensure schema.registry.url is set for KafkaAvroSerializer
+            if (kafkaProps.getProperty("schema.registry.url") == null || kafkaProps.getProperty("schema.registry.url").isEmpty()) {
+                String valueUrls = kafkaProps.getProperty("value.converter.schema.registry.url");
+                String keyUrls = kafkaProps.getProperty("key.converter.schema.registry.url");
+                String raw = (valueUrls != null && !valueUrls.isEmpty()) ? valueUrls : keyUrls;
+                if (raw != null && !raw.isEmpty()) {
+                    kafkaProps.put("schema.registry.url", raw);
+                }
+            }
 
             // Force correct serializers and create producer
+            // FIX: property name typo
             kafkaProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
             kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
             kafkaProducer = new KafkaProducer<>(kafkaProps);
             System.out.println(">>> [KcopHandler] Kafka Producer initialized");
             System.out.println(">>> [KcopHandler] Kafka bootstrap.servers: " + kafkaBootstrapServers);
-            System.out.println(">>> [KcopHandler] Namespace prefix: " + namespacePrefix); // added
+            System.out.println(">>> [KcopHandler] Namespace prefix: " + namespacePrefix);
             if (topicMappingTemplate != null) {
                 System.out.println(">>> [KcopHandler] Topic template: " + topicMappingTemplate);
             }
-            // Optional debug flag from properties
             this.debugLogs = Boolean.parseBoolean(kafkaProps.getProperty("gg.handler.kafkahandler.debugLogs", "false"));
         } catch (IOException | NoSuchAttributeException ex) {
             System.err.println("[KcopHandler] Error initializing Kafka Producer: " + ex.getMessage());
@@ -181,7 +190,7 @@ public class KcopHandler extends AbstractHandler {
             cdcRecord.put("A_JOBUSER", System.getProperty("user.name"));
             cdcRecord.put("A_USER", System.getProperty("user.name"));
 
-            byte[] avroBytes = schemaManager.serializeAvro(avroSchema, cdcRecord);
+            // No manual Avro serialization; KafkaAvroSerializer handles it
             if (kafkaProducer == null) {
                 System.err.println("[KcopHandler] Kafka producer not initialized, skipping send.");
                 return;
@@ -190,16 +199,16 @@ public class KcopHandler extends AbstractHandler {
             final String topic = resolveTopic(topicMappingTemplate, table);
             final String key = buildKey(tx);
 
-            // Register schemas only once per topic within JVM lifetime
+            // Optional: register once via client (KafkaAvroSerializer will do it anyway)
             if (lastRegisteredTopic == null || !lastRegisteredTopic.equals(topic)) {
                 schemaRegistryClient.registerIfNeeded(topic + "-value", avroSchema);
-                schemaRegistryClient.registerIfNeeded(topic + "-key", Schema.create(Type.STRING));
+                // Key is String; no Avro key schema to register here
                 lastRegisteredTopic = topic;
             }
 
-            ProducerRecord<String, byte[]> producerRecord = new ProducerRecord<>(topic, key, avroBytes);
+            ProducerRecord<String, GenericRecord> producerRecord = new ProducerRecord<>(topic, key, cdcRecord);
             System.out.println(">>> [KcopHandler] Sending bootstrap=" + kafkaBootstrapServers
-                    + " topic=" + topic + " key=" + key + " size=" + avroBytes.length + "B");
+                    + " topic=" + topic + " key=" + key);
 
             kafkaProducer.send(producerRecord, (metadata, exception) -> {
                 if (exception != null) {

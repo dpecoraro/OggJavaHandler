@@ -54,6 +54,12 @@
             <artifactId>kafka-clients</artifactId>
             <version>3.6.0</version>
         </dependency>
+        <!-- Confluent Kafka Avro Serializer (producer value serializer) -->
+        <dependency>
+            <groupId>io.confluent</groupId>
+            <artifactId>kafka-avro-serializer</artifactId>
+            <version>7.6.0</version>
+        </dependency>
         <!-- JUnit 5 (Jupiter) API and Engine -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -129,5 +135,13 @@
             </plugin>
         </plugins>
     </build>
+
+    <repositories>
+        <!-- Confluent packages repository for kafka-avro-serializer -->
+        <repository>
+            <id>confluent</id>
+            <url>https://packages.confluent.io/maven/</url>
+        </repository>
+    </repositories>
 
 </project>
