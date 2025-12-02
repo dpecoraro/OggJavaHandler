@@ -60,8 +60,6 @@ public class AvroSchemaManager {
         List<Field> envelopeFields = new ArrayList<>();
         envelopeFields.add(nullableUnionField("beforeImage", tableSchema));
         envelopeFields.add(nullableUnionField("afterImage", tableSchema));
-        envelopeFields.add(nullableUnionField("A_ENTTYP", Schema.create(Type.STRING)));
-        envelopeFields.add(nullableUnionField("A_CCID", Schema.create(Type.STRING)));
         envelopeFields.add(nullableUnionField("A_TIMSTAMP", Schema.create(Type.STRING)));
         envelopeFields.add(nullableUnionField("A_JOBUSER", Schema.create(Type.STRING)));
         envelopeFields.add(nullableUnionField("A_USER", Schema.create(Type.STRING)));

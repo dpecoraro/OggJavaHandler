@@ -54,8 +54,6 @@ public class AvroSchemaManagerTest {
         GenericRecord rec = new GenericData.Record(envelope);
         rec.put("beforeImage", null);
         rec.put("afterImage", null);
-        rec.put("A_ENTTYP", "INSERT");
-        rec.put("A_CCID", "TX1");
         rec.put("A_TIMSTAMP", String.valueOf(System.currentTimeMillis()));
         rec.put("A_JOBUSER", "tester");
         rec.put("A_USER", "tester");

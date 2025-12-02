@@ -181,8 +181,6 @@ public class KcopHandler extends AbstractHandler {
                 cdcRecord.put("afterImage", null);
             }
 
-            cdcRecord.put("A_ENTTYP", opType);
-            cdcRecord.put("A_CCID", tx.getTranID() != null ? tx.getTranID().toString() : null);
             cdcRecord.put("A_TIMSTAMP", String.valueOf(System.currentTimeMillis()));
             cdcRecord.put("A_JOBUSER", System.getProperty("user.name"));
             cdcRecord.put("A_USER", System.getProperty("user.name"));
