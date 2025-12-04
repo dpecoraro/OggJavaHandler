@@ -56,10 +56,13 @@ public class AvroSchemaManager {
 
         Schema tableSchema = Schema.createRecord(tableRecordName, "", namespacePrefix, false, tableFields);
 
-        // Build envelope schema using a helper to create nullable unions
+        // Build envelope schema (nullable unions)
         List<Field> envelopeFields = new ArrayList<>();
         envelopeFields.add(nullableUnionField("beforeImage", tableSchema));
         envelopeFields.add(nullableUnionField("afterImage", tableSchema));
+        // Reintroduce metadata fields used by KcopHandler
+        envelopeFields.add(nullableUnionField("A_ENTTYP", Schema.create(Type.STRING))); // added back
+        envelopeFields.add(nullableUnionField("A_CCID", Schema.create(Type.STRING)));   // added back
         envelopeFields.add(nullableUnionField("A_TIMSTAMP", Schema.create(Type.STRING)));
         envelopeFields.add(nullableUnionField("A_JOBUSER", Schema.create(Type.STRING)));
         envelopeFields.add(nullableUnionField("A_USER", Schema.create(Type.STRING)));
