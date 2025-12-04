@@ -140,7 +140,8 @@ public class KcopHandler extends AbstractHandler {
         }
 
         final String table = operation.getTableName() != null ? operation.getTableName().toString() : "UNKNOWN";
-        final String opType = operation.getOperationType().name();
+        // Map GoldenGate operation to CDC code
+        final String opType = mapEntTyp(operation); // changed
 
         TableMetaData tableMetaData = (metaData != null && operation.getTableName() != null)
                 ? metaData.getTableMetaData(operation.getTableName())
@@ -181,6 +182,8 @@ public class KcopHandler extends AbstractHandler {
                 cdcRecord.put("afterImage", null);
             }
 
+            cdcRecord.put("A_ENTTYP", opType); // now uses mapped value
+            cdcRecord.put("A_CCID", tx.getTranID() != null ? tx.getTranID().toString() : null);
             cdcRecord.put("A_TIMSTAMP", String.valueOf(System.currentTimeMillis()));
             cdcRecord.put("A_JOBUSER", System.getProperty("user.name"));
             cdcRecord.put("A_USER", System.getProperty("user.name"));
@@ -194,10 +197,11 @@ public class KcopHandler extends AbstractHandler {
             final String topic = resolveTopic(topicMappingTemplate, table);
             final String key = buildKey(tx);
 
-            // Optional: register once via client (KafkaAvroSerializer will do it anyway)
+            // Register schemas once per topic (value and key)
             if (lastRegisteredTopic == null || !lastRegisteredTopic.equals(topic)) {
                 schemaRegistryClient.registerIfNeeded(topic + "-value", avroSchema);
-                // Key is String; no Avro key schema to register here
+                // register STRING schema for key
+                schemaRegistryClient.registerIfNeeded(topic + "-key", Schema.create(Type.STRING)); // added
                 lastRegisteredTopic = topic;
             }
 
@@ -263,8 +267,58 @@ public class KcopHandler extends AbstractHandler {
                 case DOUBLE:
                     if (value instanceof Number) return ((Number) value).doubleValue();
                     return Double.valueOf(value.toString().trim());
-                case STRING:
-                    return value.toString();
+                case STRING: {
+                    String s = value.toString();
+                    String logical = schema.getProp("logicalType");
+
+                    // Normalize DATE to yyyy-MM-dd
+                    if (logical != null && "DATE".equalsIgnoreCase(logical)) {
+                        int spaceIdx = s.indexOf(' ');
+                        int tIdx = s.indexOf('T');
+                        int cutIdx = (spaceIdx > 0) ? spaceIdx : (tIdx > 0 ? tIdx : -1);
+                        String dateOnly = cutIdx > 0 ? s.substring(0, cutIdx) : s;
+                        if (dateOnly.length() >= 10) dateOnly = dateOnly.substring(0, 10);
+                        return dateOnly;
+                    }
+
+                    // Normalize TIMESTAMP to ISO with 'T' and 18-digit fractional seconds
+                    if (logical != null && "TIMESTAMP".equalsIgnoreCase(logical)) {
+                        // Replace space with 'T' if present
+                        String iso = s.replace(' ', 'T');
+
+                        int dotIdx = iso.indexOf('.');
+                        if (dotIdx < 0) {
+                            // No fractional part: append 18 zeros
+                            iso = iso + ".000000000000000000";
+                        } else {
+                            // Pad or trim fractional seconds to 18 digits
+                            int endIdx = iso.indexOf('Z') > 0 ? iso.indexOf('Z') : iso.length();
+                            String prefix = iso.substring(0, dotIdx + 1);
+                            String fracAndRest = iso.substring(dotIdx + 1, endIdx);
+                            // Keep only digits in fractional part
+                            StringBuilder digits = new StringBuilder();
+                            for (int i = 0; i < fracAndRest.length(); i++) {
+                                char c = fracAndRest.charAt(i);
+                                if (Character.isDigit(c)) digits.append(c);
+                                else break; // stop at first non-digit
+                            }
+                            String frac = digits.toString();
+                            if (frac.length() > 18) {
+                                frac = frac.substring(0, 18);
+                            } else if (frac.length() < 18) {
+                                StringBuilder pad = new StringBuilder(frac);
+                                while (pad.length() < 18) pad.append('0');
+                                frac = pad.toString();
+                            }
+                            // Rebuild timestamp with padded fraction and any remainder after fraction
+                            String remainder = iso.substring(dotIdx + 1 + digits.length());
+                            iso = prefix + frac + remainder;
+                        }
+                        return iso;
+                    }
+
+                    return s;
+                }
                 case BYTES:
                     if (value instanceof byte[]) return ByteBuffer.wrap((byte[]) value);
                     if (value instanceof ByteBuffer) return value;
@@ -343,5 +397,16 @@ public class KcopHandler extends AbstractHandler {
             return "cdc." + fullyQualifiedTableName.toLowerCase().replace(".", "_");
         }
         return template.replace("${fullyQualifiedTableName}", fullyQualifiedTableName);
+    }
+
+    // Map GoldenGate operation enum/name to CDC short codes
+    private String mapEntTyp(DsOperation operation) {
+        if (operation == null || operation.getOperationType() == null) return "UN";
+        String name = operation.getOperationType().name();
+        // Handle typical GG names like DO_INSERT, DO_UPDATE, DO_DELETE, DO_UNIFIED_UPDATE_VAL, etc.
+        if (name.contains("INSERT")) return "IN";
+        if (name.contains("UPDATE")) return "UP";
+        if (name.contains("DELETE")) return "DL";
+        return "UN";
     }
 }
