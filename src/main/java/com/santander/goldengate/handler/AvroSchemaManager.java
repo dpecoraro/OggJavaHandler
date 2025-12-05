@@ -16,6 +16,8 @@ import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.io.BinaryEncoder;
 import org.apache.avro.io.EncoderFactory;
 
+import com.santander.goldengate.helpers.SchemaTypeConverter;
+
 import oracle.goldengate.datasource.meta.ColumnMetaData;
 import oracle.goldengate.datasource.meta.TableMetaData;
 
@@ -26,9 +28,11 @@ public class AvroSchemaManager {
 
     private final Map<String, Schema> schemaCache = new HashMap<>();
     private final String namespacePrefix;
+    private final SchemaTypeConverter schemaTypeConverter;
 
-    public AvroSchemaManager(String namespacePrefix) {
+    public AvroSchemaManager(String namespacePrefix, SchemaTypeConverter schemaTypeConverter) {
         this.namespacePrefix = namespacePrefix;
+        this.schemaTypeConverter = schemaTypeConverter;
     }
 
     public Schema getOrCreateAvroSchema(String tableName, TableMetaData tableMetaData) {
@@ -49,7 +53,7 @@ public class AvroSchemaManager {
                 if (cm == null) break;
                 String colName = cm.getColumnName();
                 Schema colSchema = buildColumnSchema(cm);
-                Object defaultValue = getDefaultValue(colSchema);
+                Object defaultValue = schemaTypeConverter.getDefaultValue(colSchema);
                 tableFields.add(new Field(colName, colSchema, "", defaultValue));
             }
         }
@@ -152,19 +156,7 @@ public class AvroSchemaManager {
         return baseSchema;
     }
 
-    public Object getDefaultValue(Schema schema) {
-        Type type = schema.getType();
-        switch (type) {
-            case INT:
-            case LONG: return 0;
-            case FLOAT:
-            case DOUBLE: return 0.0;
-            case BOOLEAN: return false;
-            case STRING: return "";
-            case BYTES: return java.nio.ByteBuffer.wrap(new byte[0]);
-            default: return null;
-        }
-    }
+
 
     private ColumnMetaData safeGetColumnMetaData(TableMetaData tableMetaData, int index) {
         if (tableMetaData == null || index < 0) return null;

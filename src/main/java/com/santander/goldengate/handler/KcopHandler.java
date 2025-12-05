@@ -2,8 +2,11 @@ package com.santander.goldengate.handler;
 
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.util.Base64;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -13,12 +16,16 @@ import javax.naming.directory.NoSuchAttributeException;
 import org.apache.avro.Schema;
 import org.apache.avro.Schema.Field;
 import org.apache.avro.Schema.Type;
+import org.apache.avro.SchemaBuilder;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.common.serialization.StringSerializer;
+
+import com.santander.goldengate.helpers.DateFormatHandler;
+import com.santander.goldengate.helpers.EntityTypeFormatHandler;
+import com.santander.goldengate.helpers.SchemaTypeConverter;
 
 import oracle.goldengate.datasource.AbstractHandler;
 import oracle.goldengate.datasource.DsColumn;
@@ -41,8 +48,9 @@ public class KcopHandler extends AbstractHandler {
     private String kafkaProducerConfigFile;
     private DsMetaData metaData;
     private AvroSchemaManager schemaManager;
-    private KafkaProducer<String, GenericRecord> kafkaProducer; // use Avro serializer for values
-    private String topicMappingTemplate; 
+    private SchemaTypeConverter schemaTypeConverter;
+    private KafkaProducer<Object, GenericRecord> kafkaProducer; // key via Avro serializer to auto-register in SR
+    private String topicMappingTemplate;
     private String kafkaBootstrapServers;
     private SchemaRegistryClient schemaRegistryClient;
 
@@ -63,7 +71,7 @@ public class KcopHandler extends AbstractHandler {
         System.out.println(">>> [KcopHandler] init() called");
         super.init(config, metaData);
         this.metaData = metaData;
-        
+
         // Initialize Kafka Producer
         try {
             Properties kafkaProps = new Properties();
@@ -81,7 +89,8 @@ public class KcopHandler extends AbstractHandler {
 
             // Namespace prefix and schema manager
             String namespacePrefix = kafkaProps.getProperty("gg.handler.kafkahandler.namespacePrefix", "value.SOURCEDB.BALP");
-            this.schemaManager = new AvroSchemaManager(namespacePrefix);
+            this.schemaTypeConverter = new SchemaTypeConverter();
+            this.schemaManager = new AvroSchemaManager(namespacePrefix, schemaTypeConverter);
 
             // init registry client (optional, KafkaAvroSerializer will register automatically)
             schemaRegistryClient = new SchemaRegistryClient();
@@ -97,8 +106,10 @@ public class KcopHandler extends AbstractHandler {
                 }
             }
 
-            kafkaProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+            // Use Avro serializers for both key and value
+            kafkaProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "io.confluent.kafka.serializers.KafkaAvroSerializer");
             kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "io.confluent.kafka.serializers.KafkaAvroSerializer");
+
             kafkaProducer = new KafkaProducer<>(kafkaProps);
             System.out.println(">>> [KcopHandler] Kafka Producer initialized");
             System.out.println(">>> [KcopHandler] Kafka bootstrap.servers: " + kafkaBootstrapServers);
@@ -124,7 +135,8 @@ public class KcopHandler extends AbstractHandler {
                 System.out.println(">>> [KcopHandler] Processed: " + operationCount);
             }
 
-            processOperation(operation, tx);
+            // pass event to processOperation
+            processOperation(event, tx, operation);
             return Status.OK;
 
         } catch (Exception ex) {
@@ -133,15 +145,17 @@ public class KcopHandler extends AbstractHandler {
         }
     }
 
-    private void processOperation(DsOperation operation, DsTransaction tx) {
+    // include event to read operation timestamp
+    private void processOperation(DsEvent event, DsTransaction tx, DsOperation operation) {
         if (tx == null || operation == null) {
             System.out.println(">>> [KcopHandler] Warning: tx/operation null");
             return;
         }
 
         final String table = operation.getTableName() != null ? operation.getTableName().toString() : "UNKNOWN";
-        // Map GoldenGate operation to CDC code
-        final String opType = mapEntTyp(operation); // changed
+
+        EntityTypeFormatHandler enttypHandler = new EntityTypeFormatHandler();
+        final String opType = enttypHandler.mapEntTyp(operation);
 
         TableMetaData tableMetaData = (metaData != null && operation.getTableName() != null)
                 ? metaData.getTableMetaData(operation.getTableName())
@@ -156,9 +170,13 @@ public class KcopHandler extends AbstractHandler {
             for (DsColumn c : record.getColumns()) {
                 String columnName = getColumnNameByIndex(idx, tableMetaData);
                 Object afterVal = c.hasAfterValue() ? c.getAfterValue() : null;
-                if (afterVal != null) afterImage.put(columnName, extractValue(afterVal));
+                if (afterVal != null) {
+                    afterImage.put(columnName, extractValue(afterVal));
+                }
                 Object beforeVal = c.hasBeforeValue() ? c.getBeforeValue() : null;
-                if (beforeVal != null) beforeImage.put(columnName, extractValue(beforeVal));
+                if (beforeVal != null) {
+                    beforeImage.put(columnName, extractValue(beforeVal));
+                }
                 idx++;
             }
         } else {
@@ -182,32 +200,32 @@ public class KcopHandler extends AbstractHandler {
                 cdcRecord.put("afterImage", null);
             }
 
-            cdcRecord.put("A_ENTTYP", opType); // now uses mapped value
+            DateFormatHandler dateHandler = new DateFormatHandler();
+            cdcRecord.put("A_ENTTYP", opType);
             cdcRecord.put("A_CCID", tx.getTranID() != null ? tx.getTranID().toString() : null);
-            cdcRecord.put("A_TIMSTAMP", String.valueOf(System.currentTimeMillis()));
-            cdcRecord.put("A_JOBUSER", System.getProperty("user.name"));
-            cdcRecord.put("A_USER", System.getProperty("user.name"));
+            cdcRecord.put("A_TIMSTAMP", dateHandler.TimeStampNormalizeFromMillis(extractOperationTimestampMillis(event, tx, operation)));
+            String ggUser = extractUser(event, tx, operation);
+            cdcRecord.put("A_JOBUSER", ggUser != null ? ggUser : "");
+            cdcRecord.put("A_USER", ggUser != null ? ggUser : "");
 
-            // No manual Avro serialization; KafkaAvroSerializer handles it
-            if (kafkaProducer == null) {
-                System.err.println("[KcopHandler] Kafka producer not initialized, skipping send.");
-                return;
-            }
-
+            // Build topic
             final String topic = resolveTopic(topicMappingTemplate, table);
-            final String key = buildKey(tx);
+
+            // Build Avro key schema and key record based on table key columns
+            Schema keySchema = buildKeySchema(table, tableMetaData);
+            GenericRecord keyRecord = buildKeyRecord(keySchema, tableMetaData, beforeImage, afterImage);
 
             // Register schemas once per topic (value and key)
             if (lastRegisteredTopic == null || !lastRegisteredTopic.equals(topic)) {
                 schemaRegistryClient.registerIfNeeded(topic + "-value", avroSchema);
-                // register STRING schema for key
-                schemaRegistryClient.registerIfNeeded(topic + "-key", Schema.create(Type.STRING)); // added
+                schemaRegistryClient.registerIfNeeded(topic + "-key", keySchema);
                 lastRegisteredTopic = topic;
             }
 
-            ProducerRecord<String, GenericRecord> producerRecord = new ProducerRecord<>(topic, key, cdcRecord);
+            // Send with Avro-serialized key and value
+            ProducerRecord<Object, GenericRecord> producerRecord = new ProducerRecord<>(topic, keyRecord, cdcRecord);
             System.out.println(">>> [KcopHandler] Sending bootstrap=" + kafkaBootstrapServers
-                    + " topic=" + topic + " key=" + key);
+                    + " topic=" + topic + " key.schema=" + keySchema.getFullName());
 
             kafkaProducer.send(producerRecord, (metadata, exception) -> {
                 if (exception != null) {
@@ -228,6 +246,83 @@ public class KcopHandler extends AbstractHandler {
         }
     }
 
+    private Schema buildKeySchema(String table, TableMetaData tableMetaData) {
+        // Short name (last segment of table)
+        String shortName = table != null && table.contains(".")
+                ? table.substring(table.lastIndexOf('.') + 1)
+                : table;
+
+        SchemaBuilder.FieldAssembler<Schema> fieldsBuilder = SchemaBuilder
+                .record(shortName)
+                .namespace("key.SOURCEDB.BALP")
+                .fields();
+
+        if (tableMetaData != null) {
+            for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
+                ColumnMetaData col = tableMetaData.getColumnMetaData(i);
+                if (col == null) {
+                    continue;
+                }
+                // Adapt this to GG's key-column indicator (isKey() example)
+                if (!col.isKeyCol()) {
+                    continue;
+                }
+
+                String colName = col.getColumnName();
+                Schema unionSchema = SchemaBuilder.unionOf().stringType().and().nullType().endUnion();
+
+                fieldsBuilder = fieldsBuilder
+                        .name(colName)
+                        .type(unionSchema)
+                        .noDefault();
+            }
+        }
+
+        Schema keySchema = fieldsBuilder.endRecord();
+
+        // Add "length" property per field (as provided by GG metadata)
+        if (tableMetaData != null) {
+            for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
+                ColumnMetaData col = tableMetaData.getColumnMetaData(i);
+                if (col == null || !col.isKeyCol()) {
+                    continue;
+                }
+                Field f = keySchema.getField(col.getColumnName());
+                if (f != null) {
+                    f.addProp("length", String.valueOf(col.getBinaryLength()));
+                }
+            }
+        }
+
+        return keySchema;
+    }
+
+    private GenericRecord buildKeyRecord(Schema keySchema,
+            TableMetaData tableMetaData,
+            Map<String, Object> beforeImage,
+            Map<String, Object> afterImage) {
+        GenericRecord keyRecord = new GenericData.Record(keySchema);
+        if (tableMetaData != null) {
+            for (Field f : keySchema.getFields()) {
+                String name = f.name();
+                // Prefer afterImage value; fallback to beforeImage
+                Object val = afterImage.get(name);
+                if (val == null) {
+                    val = beforeImage.get(name);
+                }
+                // Convert to string (or null)
+                String s = (val == null) ? null : val.toString();
+                keyRecord.put(name, s);
+            }
+        }
+        return keyRecord;
+    }
+
+    private Schema buildValueSchema(String table, TableMetaData tableMetaData) {
+        // Use the existing logic to build the value schema
+        return schemaManager.getOrCreateAvroSchema(table, tableMetaData);
+    }
+
     // Build key from transaction
     protected String buildKey(DsTransaction tx) {
         return tx != null && tx.getTranID() != null ? tx.getTranID().toString() : "unknown";
@@ -246,15 +341,21 @@ public class KcopHandler extends AbstractHandler {
     }
 
     protected Object convertValueToSchemaType(Object value, Schema schema) {
-        if (value == null) return schemaManager.getDefaultValue(schema);
+        if (value == null) {
+            return schemaTypeConverter.getDefaultValue(schema);
+        }
         Type type = schema.getType();
         try {
             switch (type) {
                 case INT:
-                    if (value instanceof Number) return ((Number) value).intValue();
+                    if (value instanceof Number) {
+                        return ((Number) value).intValue();
+                    }
                     return Integer.valueOf(value.toString().trim());
                 case LONG:
-                    if (value instanceof Number) return ((Number) value).longValue();
+                    if (value instanceof Number) {
+                        return ((Number) value).longValue();
+                    }
                     String ls = value.toString().trim();
                     if (ls.contains(".")) {
                         double d = Double.parseDouble(ls);
@@ -262,23 +363,23 @@ public class KcopHandler extends AbstractHandler {
                     }
                     return Long.valueOf(ls);
                 case FLOAT:
-                    if (value instanceof Number) return ((Number) value).floatValue();
+                    if (value instanceof Number) {
+                        return ((Number) value).floatValue();
+                    }
                     return Float.valueOf(value.toString().trim());
                 case DOUBLE:
-                    if (value instanceof Number) return ((Number) value).doubleValue();
+                    if (value instanceof Number) {
+                        return ((Number) value).doubleValue();
+                    }
                     return Double.valueOf(value.toString().trim());
                 case STRING: {
                     String s = value.toString();
                     String logical = schema.getProp("logicalType");
 
-                    // Normalize DATE to yyyy-MM-dd
+                    // Normalize DATE to yyyy-MM-dd (ano-mes-dia)
                     if (logical != null && "DATE".equalsIgnoreCase(logical)) {
-                        int spaceIdx = s.indexOf(' ');
-                        int tIdx = s.indexOf('T');
-                        int cutIdx = (spaceIdx > 0) ? spaceIdx : (tIdx > 0 ? tIdx : -1);
-                        String dateOnly = cutIdx > 0 ? s.substring(0, cutIdx) : s;
-                        if (dateOnly.length() >= 10) dateOnly = dateOnly.substring(0, 10);
-                        return dateOnly;
+                        DateFormatHandler dateHandler = new DateFormatHandler();
+                        return dateHandler.NormalizeDateString(s);
                     }
 
                     // Normalize TIMESTAMP to ISO with 'T' and 18-digit fractional seconds
@@ -299,18 +400,23 @@ public class KcopHandler extends AbstractHandler {
                             StringBuilder digits = new StringBuilder();
                             for (int i = 0; i < fracAndRest.length(); i++) {
                                 char c = fracAndRest.charAt(i);
-                                if (Character.isDigit(c)) digits.append(c);
-                                else break; // stop at first non-digit
+                                if (Character.isDigit(c)) {
+                                    digits.append(c);
+                                } else {
+                                    break; // stop at first non-digit
+
+                                }
                             }
                             String frac = digits.toString();
                             if (frac.length() > 18) {
                                 frac = frac.substring(0, 18);
                             } else if (frac.length() < 18) {
                                 StringBuilder pad = new StringBuilder(frac);
-                                while (pad.length() < 18) pad.append('0');
+                                while (pad.length() < 18) {
+                                    pad.append('0');
+                                }
                                 frac = pad.toString();
                             }
-                            // Rebuild timestamp with padded fraction and any remainder after fraction
                             String remainder = iso.substring(dotIdx + 1 + digits.length());
                             iso = prefix + frac + remainder;
                         }
@@ -320,8 +426,12 @@ public class KcopHandler extends AbstractHandler {
                     return s;
                 }
                 case BYTES:
-                    if (value instanceof byte[]) return ByteBuffer.wrap((byte[]) value);
-                    if (value instanceof ByteBuffer) return value;
+                    if (value instanceof byte[]) {
+                        return ByteBuffer.wrap((byte[]) value);
+                    }
+                    if (value instanceof ByteBuffer) {
+                        return value;
+                    }
                     try {
                         return ByteBuffer.wrap(Base64.getDecoder().decode(value.toString()));
                     } catch (IllegalArgumentException e) {
@@ -332,7 +442,7 @@ public class KcopHandler extends AbstractHandler {
             }
         } catch (NumberFormatException e) {
             System.err.println("[KcopHandler] Error converting value " + value + " to type " + type + ": " + e.getMessage());
-            return schemaManager.getDefaultValue(schema);
+            return schemaTypeConverter.getDefaultValue(schema);
         }
     }
 
@@ -350,7 +460,9 @@ public class KcopHandler extends AbstractHandler {
 
     protected Object extractValue(Object value) {
         try {
-            if (value == null) return null;
+            if (value == null) {
+                return null;
+            }
             if (value instanceof byte[]) {
                 return Base64.getEncoder().encodeToString((byte[]) value);
             }
@@ -367,7 +479,7 @@ public class KcopHandler extends AbstractHandler {
 
     @Override
     public void destroy() {
-        System.out.println(">>> [KcopHandler] destroy() called");        
+        System.out.println(">>> [KcopHandler] destroy() called");
         if (kafkaProducer != null) {
             kafkaProducer.flush();
             kafkaProducer.close();
@@ -382,7 +494,9 @@ public class KcopHandler extends AbstractHandler {
 
     // Safe access to metadata column by index, returns null when out-of-range or on error
     private ColumnMetaData safeGetColumnMetaData(TableMetaData tableMetaData, int index) {
-        if (tableMetaData == null || index < 0) return null;
+        if (tableMetaData == null || index < 0) {
+            return null;
+        }
         try {
             return tableMetaData.getColumnMetaData(index);
         } catch (IndexOutOfBoundsException ex) {
@@ -399,38 +513,107 @@ public class KcopHandler extends AbstractHandler {
         return template.replace("${fullyQualifiedTableName}", fullyQualifiedTableName);
     }
 
-    // Map GoldenGate operation enum/name to CDC short codes (PT/UP/DL/RR) using switch
-    private String mapEntTyp(DsOperation operation) {
-        if (operation == null || operation.getOperationType() == null) return "UN";
-        String name = operation.getOperationType().name();
-        switch (name) {
-            // Insert variants
-            case "DO_INSERT":
-            case "INSERT":
-            case "DO_UNIFIED_INSERT_VAL":
-                return "PT";
-            // Update variants
-            case "DO_UPDATE":
-            case "UPDATE":
-            case "DO_UNIFIED_UPDATE_VAL":
-                return "UP";
-            // Delete variants
-            case "DO_DELETE":
-            case "DELETE":
-            case "DO_UNIFIED_DELETE_VAL":
-                return "DL";
-            // Refresh variants
-            case "DO_REFRESH":
-            case "REFRESH":
-            case "DO_UNIFIED_REFRESH_VAL":
-                return "RR";
-            default:
-                // Fallback: coarse detection for unexpected names
-                if (name.contains("INSERT")) return "PT";
-                if (name.contains("UPDATE")) return "UP";
-                if (name.contains("DELETE")) return "DL";
-                if (name.contains("REFRESH")) return "RR";
-                return "UN";
+    // Try to get operation/event timestamp in millis; fallback to System.currentTimeMillis()
+    private long extractOperationTimestampMillis(DsEvent event, DsTransaction tx, DsOperation operation) {
+        // Try: event.getTimestamp()
+        Long fromEvent = tryGetMillisViaReflection(event, "getTimestamp");
+        if (fromEvent != null) {
+            return fromEvent;
         }
+
+        // Try: operation.getTimestamp()
+        Long fromOp = tryGetMillisViaReflection(operation, "getTimestamp");
+        if (fromOp != null) {
+            return fromOp;
+        }
+
+        // Try: tx.getTimestamp()
+        Long fromTx = tryGetMillisViaReflection(tx, "getTimestamp");
+        if (fromTx != null) {
+            return fromTx;
+        }
+
+        // Fallback
+        return System.currentTimeMillis();
+    }
+
+    // Helper: call obj.methodName() and convert to millis if it returns Date/Long/String
+    private Long tryGetMillisViaReflection(Object obj, String methodName) {
+        if (obj == null) {
+            return null;
+        }
+        try {
+            Method m = obj.getClass().getMethod(methodName);
+            Object val = m.invoke(obj);
+            if (val == null) {
+                return null;
+            }
+
+            if (val instanceof Date) {
+                return ((Date) val).getTime();
+            }
+            if (val instanceof Number) {
+                return ((Number) val).longValue();
+            }
+            if (val instanceof CharSequence) {
+                // Try parse epoch millis from string; otherwise return null
+                try {
+                    return Long.valueOf(val.toString().trim());
+                } catch (NumberFormatException ignore) {
+                    return null;
+                }
+            }
+        } catch (IllegalAccessException
+                | IllegalArgumentException
+                | NoSuchMethodException
+                | SecurityException
+                | InvocationTargetException ignore) {
+            return null;
+        }
+        return null;
+    }
+
+    // Try to get user name from event/tx/operation via common GG methods; fallback null
+    private String extractUser(DsEvent event, DsTransaction tx, DsOperation operation) {
+        String u;
+        // Common method names across GG APIs
+        String[] methodCandidates = new String[]{
+            "getUserName", "getUsername", "getUser", "getJobUser", "getOwner"
+        };
+        // Try on tx first
+        u = tryGetStringViaReflection(tx, methodCandidates);
+        if (u != null && !u.isEmpty()) {
+            return u;
+        }
+        // Then on operation
+        u = tryGetStringViaReflection(operation, methodCandidates);
+        if (u != null && !u.isEmpty()) {
+            return u;
+        }
+        // Then on event
+        u = tryGetStringViaReflection(event, methodCandidates);
+        return (u != null && !u.isEmpty()) ? u : null;
+    }
+
+    // Helper: call the first available method that returns a String
+    private String tryGetStringViaReflection(Object obj, String[] methodNames) {
+        if (obj == null || methodNames == null) {
+            return null;
+        }
+        for (String mName : methodNames) {
+            try {
+                Method m = obj.getClass().getMethod(mName);
+                Object val = m.invoke(obj);
+                if (val instanceof CharSequence) {
+                    String s = val.toString().trim();
+                    if (!s.isEmpty()) {
+                        return s;
+                    }
+                }
+            } catch (Exception ignore) {
+                // continue trying next method
+            }
+        }
+        return null;
     }
 }

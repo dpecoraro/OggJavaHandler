@@ -11,8 +11,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled; // added
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+
+import com.santander.goldengate.helpers.SchemaTypeConverter;
 
 @Disabled("Depends on Oracle GoldenGate runtime classes not present on test classpath")
 public class KcopHandlerTest {
@@ -23,8 +25,8 @@ public class KcopHandlerTest {
     @BeforeEach
     void setup() {
         handler = new KcopHandler();
-        schemaManager = new AvroSchemaManager("value.TEST.DB");
-        // Inject schemaManager through reflection since it's private
+        SchemaTypeConverter converter = new SchemaTypeConverter();
+        schemaManager = new AvroSchemaManager("value.TEST.DB", converter);
         try {
             Field f = KcopHandler.class.getDeclaredField("schemaManager");
             f.setAccessible(true);

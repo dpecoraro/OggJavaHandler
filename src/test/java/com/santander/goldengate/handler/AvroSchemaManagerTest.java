@@ -11,11 +11,14 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Test;
 
+import com.santander.goldengate.helpers.SchemaTypeConverter;
+
 public class AvroSchemaManagerTest {
 
     @Test
     void testComputeNamespaceAndEnvelope() {
-        AvroSchemaManager mgr = new AvroSchemaManager("value.SOURCEDB");
+        SchemaTypeConverter converter = new SchemaTypeConverter();
+        AvroSchemaManager mgr = new AvroSchemaManager("value.SOURCEDB", converter);
 
         // Pass null metadata to avoid GoldenGate dependencies in tests
         Schema envelope = mgr.getOrCreateAvroSchema("ORAPR835.BALP.AEDT074", null);
@@ -39,8 +42,9 @@ public class AvroSchemaManagerTest {
     }
 
     @Test
-    void testSchemaCaching() {
-        AvroSchemaManager mgr = new AvroSchemaManager("value.DB");
+    void testSchemaCaching() throws Exception {
+        SchemaTypeConverter converter = new SchemaTypeConverter();
+        AvroSchemaManager mgr = new AvroSchemaManager("value.DB", converter);
         Schema s1 = mgr.getOrCreateAvroSchema("DB.SCH.TBLX", null);
         Schema s2 = mgr.getOrCreateAvroSchema("DB.SCH.TBLX", null);
         assertSame(s1, s2, "Schema should be cached and reused");
@@ -48,7 +52,8 @@ public class AvroSchemaManagerTest {
 
     @Test
     void testSerializeAvroNotEmpty() throws Exception {
-        AvroSchemaManager mgr = new AvroSchemaManager("value.DB");
+        SchemaTypeConverter converter = new SchemaTypeConverter();
+        AvroSchemaManager mgr = new AvroSchemaManager("value.DB", converter);
         Schema envelope = mgr.getOrCreateAvroSchema("DB.SCH.T1", null);
 
         GenericRecord rec = new GenericData.Record(envelope);
