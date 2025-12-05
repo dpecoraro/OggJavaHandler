@@ -318,11 +318,6 @@ public class KcopHandler extends AbstractHandler {
         return keyRecord;
     }
 
-    private Schema buildValueSchema(String table, TableMetaData tableMetaData) {
-        // Use the existing logic to build the value schema
-        return schemaManager.getOrCreateAvroSchema(table, tableMetaData);
-    }
-
     // Build key from transaction
     protected String buildKey(DsTransaction tx) {
         return tx != null && tx.getTranID() != null ? tx.getTranID().toString() : "unknown";
