@@ -16,7 +16,6 @@ import javax.naming.directory.NoSuchAttributeException;
 import org.apache.avro.Schema;
 import org.apache.avro.Schema.Field;
 import org.apache.avro.Schema.Type;
-import org.apache.avro.SchemaBuilder;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -208,24 +207,21 @@ public class KcopHandler extends AbstractHandler {
             cdcRecord.put("A_JOBUSER", ggUser != null ? ggUser : "");
             cdcRecord.put("A_USER", ggUser != null ? ggUser : "");
 
-            // Build topic
+            // Build topic and string key
             final String topic = resolveTopic(topicMappingTemplate, table);
+            final String keyStr = buildKey(tx);
 
-            // Build Avro key schema and key record based on table key columns
-            Schema keySchema = buildKeySchema(table, tableMetaData);
-            GenericRecord keyRecord = buildKeyRecord(keySchema, tableMetaData, beforeImage, afterImage);
-
-            // Register schemas once per topic (value and key)
+            // Register schemas once per topic (value and key) with STRING for key
             if (lastRegisteredTopic == null || !lastRegisteredTopic.equals(topic)) {
                 schemaRegistryClient.registerIfNeeded(topic + "-value", avroSchema);
-                schemaRegistryClient.registerIfNeeded(topic + "-key", keySchema);
+                schemaRegistryClient.registerIfNeeded(topic + "-key", Schema.create(Type.STRING)); // ensure STRING subject
                 lastRegisteredTopic = topic;
             }
 
-            // Send with Avro-serialized key and value
-            ProducerRecord<Object, GenericRecord> producerRecord = new ProducerRecord<>(topic, keyRecord, cdcRecord);
+            // Send with Avro-serialized key as String (KafkaAvroSerializer will use Avro STRING)
+            ProducerRecord<Object, GenericRecord> producerRecord = new ProducerRecord<>(topic, keyStr, cdcRecord);
             System.out.println(">>> [KcopHandler] Sending bootstrap=" + kafkaBootstrapServers
-                    + " topic=" + topic + " key.schema=" + keySchema.getFullName());
+                    + " topic=" + topic + " key=" + keyStr);
 
             kafkaProducer.send(producerRecord, (metadata, exception) -> {
                 if (exception != null) {
@@ -244,78 +240,6 @@ public class KcopHandler extends AbstractHandler {
         } catch (Exception ex) {
             System.err.println("[KcopHandler] Error creating/sending Avro: " + ex.getMessage());
         }
-    }
-
-    private Schema buildKeySchema(String table, TableMetaData tableMetaData) {
-        // Short name (last segment of table)
-        String shortName = table != null && table.contains(".")
-                ? table.substring(table.lastIndexOf('.') + 1)
-                : table;
-
-        SchemaBuilder.FieldAssembler<Schema> fieldsBuilder = SchemaBuilder
-                .record(shortName)
-                .namespace("key.SOURCEDB.BALP")
-                .fields();
-
-        if (tableMetaData != null) {
-            for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
-                ColumnMetaData col = tableMetaData.getColumnMetaData(i);
-                if (col == null) {
-                    continue;
-                }
-                // Adapt this to GG's key-column indicator (isKey() example)
-                if (!col.isKeyCol()) {
-                    continue;
-                }
-
-                String colName = col.getColumnName();
-                Schema unionSchema = SchemaBuilder.unionOf().stringType().and().nullType().endUnion();
-
-                fieldsBuilder = fieldsBuilder
-                        .name(colName)
-                        .type(unionSchema)
-                        .noDefault();
-            }
-        }
-
-        Schema keySchema = fieldsBuilder.endRecord();
-
-        // Add "length" property per field (as provided by GG metadata)
-        if (tableMetaData != null) {
-            for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
-                ColumnMetaData col = tableMetaData.getColumnMetaData(i);
-                if (col == null || !col.isKeyCol()) {
-                    continue;
-                }
-                Field f = keySchema.getField(col.getColumnName());
-                if (f != null) {
-                    f.addProp("length", String.valueOf(col.getBinaryLength()));
-                }
-            }
-        }
-
-        return keySchema;
-    }
-
-    private GenericRecord buildKeyRecord(Schema keySchema,
-            TableMetaData tableMetaData,
-            Map<String, Object> beforeImage,
-            Map<String, Object> afterImage) {
-        GenericRecord keyRecord = new GenericData.Record(keySchema);
-        if (tableMetaData != null) {
-            for (Field f : keySchema.getFields()) {
-                String name = f.name();
-                // Prefer afterImage value; fallback to beforeImage
-                Object val = afterImage.get(name);
-                if (val == null) {
-                    val = beforeImage.get(name);
-                }
-                // Convert to string (or null)
-                String s = (val == null) ? null : val.toString();
-                keyRecord.put(name, s);
-            }
-        }
-        return keyRecord;
     }
 
     // Build key from transaction
