@@ -18,6 +18,7 @@ import org.apache.avro.Schema.Field;
 import org.apache.avro.Schema.Type;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
+import org.apache.commons.codec.binary.Base32;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -242,9 +243,49 @@ public class KcopHandler extends AbstractHandler {
         }
     }
 
-    // Build key from transaction
+    // Build key from transaction (ASCII-safe). If ID is binary or contains non-ASCII, encode with Base32.
     protected String buildKey(DsTransaction tx) {
-        return tx != null && tx.getTranID() != null ? tx.getTranID().toString() : "unknown";
+        if (tx == null || tx.getTranID() == null) return "unknown";
+        Object id = tx.getTranID();
+        try {
+            if (id instanceof byte[]) {
+                Base32 b32 = new Base32();
+                return b32.encodeToString((byte[]) id).replace("=", ""); // strip padding
+            }
+            // If ID object has a bytes accessor, try reflectively
+            try {
+                Method m = id.getClass().getMethod("getBytes");
+                Object bytes = m.invoke(id);
+                if (bytes instanceof byte[]) {
+                    Base32 b32 = new Base32();
+                    return b32.encodeToString((byte[]) bytes).replace("=", "");
+                }
+            } catch (Exception ignore) {
+                // fallback to string normalization
+            }
+            // Normalize to ASCII: replace non-ASCII with hex and collapse spaces
+            String s = id.toString();
+            StringBuilder out = new StringBuilder();
+            for (int i = 0; i < s.length(); i++) {
+                char c = s.charAt(i);
+                if (c >= 32 && c <= 126) {
+                    out.append(c);
+                } else {
+                    // non-ASCII: append hex codepoint
+                    out.append(String.format("_%02X", (int) c));
+                }
+            }
+            String normalized = out.toString().trim();
+            if (normalized.isEmpty()) {
+                // last resort: Base32 of original UTF-8 bytes
+                Base32 b32 = new Base32();
+                return b32.encodeToString(s.getBytes(java.nio.charset.StandardCharsets.UTF_8)).replace("=", "");
+            }
+            return normalized;
+        } catch (Exception e) {
+            System.err.println("[KcopHandler] Failed to build ASCII-safe key: " + e.getMessage());
+            return "unknown";
+        }
     }
 
     private GenericRecord createTableRecord(Schema envelopeSchema, String fieldName, Map<String, Object> data) {
