@@ -20,6 +20,7 @@ import javax.naming.directory.NoSuchAttributeException;
 import org.apache.avro.Schema;
 import org.apache.avro.Schema.Field;
 import org.apache.avro.Schema.Type;
+import org.apache.avro.SchemaBuilder;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -214,45 +215,56 @@ public class KcopHandler extends AbstractHandler {
             cdcRecord.put("A_JOBUSER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser); // changed
             cdcRecord.put("A_USER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser);    // changed
 
-            // Build topic and string key
+            // Build topic
             final String topic = resolveTopic(topicMappingTemplate, table);
-            final String keyStr = buildKey(tx); // sanitized key
+
+            // Build Avro key schema (RECORD) and key GenericRecord from PK columns
+            Schema keySchema = buildRecordKeySchema(table, tableMetaData);
+            GenericRecord keyRecord = buildRecordKey(keySchema, tableMetaData, beforeImage, afterImage);
 
             // Log control fields and key
             System.out.println(">>> [KcopHandler] Prepared message:"
                     + " topic=" + topic
-                    + " key=" + keyStr
+                    + " keyRecord=" + keyRecord
+                    + " keySchema=" + keySchema.getFullName()
                     + " A_ENTTYP=" + cdcRecord.get("A_ENTTYP")
                     + " A_CCID=" + cdcRecord.get("A_CCID")
                     + " A_TIMSTAMP=" + cdcRecord.get("A_TIMSTAMP")
                     + " A_JOBUSER=" + cdcRecord.get("A_JOBUSER")
                     + " A_USER=" + cdcRecord.get("A_USER"));
 
-            // Register schemas once per topic (value and key) with STRING for key
+            // Register schemas once per topic (value and key) — RECORD key
             if (lastRegisteredTopic == null || !lastRegisteredTopic.equals(topic)) {
                 String valueSubject = topic + "-value";
                 String keySubject = topic + "-key";
+
+                System.out.println(">>> [KcopHandler] Registering value schema:"
+                        + " subject=" + valueSubject
+                        + " schemaName=" + avroSchema.getFullName());
                 schemaRegistryClient.registerIfNeeded(valueSubject, avroSchema);
-                schemaRegistryClient.registerIfNeeded(keySubject, Schema.create(Type.STRING)); // ensure STRING subject
+
+                System.out.println(">>> [KcopHandler] Registering key schema:"
+                        + " subject=" + keySubject
+                        + " schema=" + keySchema.toString());
+                schemaRegistryClient.registerIfNeeded(keySubject, keySchema);
+
                 System.out.println(">>> [KcopHandler] Schema registry subjects registered:"
                         + " valueSubject=" + valueSubject
                         + " keySubject=" + keySubject);
-                System.out.println(">>> [KcopHandler] Value schema: " + avroSchema.getFullName()
-                        + " namespace=" + avroSchema.getNamespace()
-                        + " name=" + avroSchema.getName());
                 lastRegisteredTopic = topic;
             }
 
             System.out.println(">>> [KcopHandler] Envelope schema (pretty): " + avroSchema.toString(true));
             System.out.println(">>> [KcopHandler] CDC Record payload: " + cdcRecord);
+            System.out.println(">>> [KcopHandler] Key Record payload: " + keyRecord);
             System.out.println(">>> [KcopHandler] BeforeImage map: " + beforeImage);
             System.out.println(">>> [KcopHandler] AfterImage map: " + afterImage);
 
-            // Send with Avro-serialized key as String (KafkaAvroSerializer will use Avro STRING)
-            ProducerRecord<Object, GenericRecord> producerRecord = new ProducerRecord<>(topic, keyStr, cdcRecord);
+            // Send with Avro-serialized key (GenericRecord) and Avro-serialized value
+            ProducerRecord<Object, GenericRecord> producerRecord = new ProducerRecord<>(topic, keyRecord, cdcRecord);
             System.out.println(">>> [KcopHandler] Sending to Kafka: bootstrap=" + kafkaBootstrapServers
                     + " topic=" + topic
-                    + " key=" + keyStr);
+                    + " key.schema=" + keySchema.getFullName());
 
             kafkaProducer.send(producerRecord, (metadata, exception) -> {
                 if (exception != null) {
@@ -272,32 +284,137 @@ public class KcopHandler extends AbstractHandler {
         }
     }
 
-    // Build key from transaction (ASCII-only digits). Strips non-digits to avoid strange characters and ensures compatibility with STRING key subject.
-    protected String buildKey(DsTransaction tx) {
-        if (tx == null || tx.getTranID() == null) {
-            return "unknown";
+    // Build RECORD key schema based on PK columns
+    private Schema buildRecordKeySchema(String table, TableMetaData tableMetaData) {
+        String shortName = table != null && table.contains(".")
+                ? table.substring(table.lastIndexOf('.') + 1)
+                : table;
+
+        SchemaBuilder.FieldAssembler<Schema> fields = SchemaBuilder
+                .record(shortName)
+                .namespace("key.SOURCEDB.BALP")
+                .fields();
+
+        if (tableMetaData != null) {
+            for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
+                ColumnMetaData col = tableMetaData.getColumnMetaData(i);
+                if (col == null || !col.isKeyCol()) {
+                    continue;
+                }
+
+                String colName = col.getColumnName();
+                // Infer a simple type for key fields (DECIMAL -> long when scale=0; else string)
+                Schema colSchema;
+                String typeName = col.getDataType() != null ? col.getDataType().toString().toUpperCase() : "";
+                boolean isDecimalLike = typeName.contains("NUMBER") || typeName.contains("DECIMAL") || typeName.contains("NUMERIC");
+                int numericScale = getNumericScale(col); // safely obtain scale via reflection or default
+                if (isDecimalLike && numericScale == 0) {
+                    colSchema = Schema.create(Type.LONG);
+                    colSchema.addProp("logicalType", "DECIMAL");
+                    colSchema.addProp("precision", getNumericPrecision(col));
+                    colSchema.addProp("scale", 0);
+                } else if (typeName.contains("DATE")) {
+                    colSchema = Schema.create(Type.STRING);
+                    colSchema.addProp("logicalType", "DATE");
+                    colSchema.addProp("length", 10);
+                } else if (typeName.contains("TIME") || typeName.contains("TIMESTAMP")) {
+                    colSchema = Schema.create(Type.STRING);
+                    colSchema.addProp("logicalType", "TIMESTAMP");
+                    colSchema.addProp("length", 32);
+                } else {
+                    colSchema = Schema.create(Type.STRING);
+                    colSchema.addProp("logicalType", "CHARACTER");
+                    colSchema.addProp("length", Math.max(1, col.getBinaryLength()));
+                }
+                colSchema.addProp("dbColumnName", colName);
+
+                fields.name(colName).type(colSchema).withDefault(getDefaultForType(colSchema.getType()));
+            }
         }
-        String s = tx.getTranID().toString();
-        String digits = s.replaceAll("\\D+", "");
-        return digits.isEmpty() ? "unknown" : digits;
+
+        return fields.endRecord();
     }
 
-    private GenericRecord createTableRecord(Schema envelopeSchema, String fieldName, Map<String, Object> data) {
-        Schema unionSchema = envelopeSchema.getField(fieldName).schema();
-        Schema tableSchema = unionSchema.getTypes().get(1);
-        GenericRecord tableRecord = new GenericData.Record(tableSchema);
-        for (Field field : tableSchema.getFields()) {
-            Object value = data.get(field.name());
-            // use overload with field name to enforce date-only for DT_* columns
-            Object convertedValue = convertValueToSchemaType(value, field.schema(), field.name()); // changed
-            tableRecord.put(field.name(), convertedValue);
+    // Build GenericRecord key from afterImage/beforeImage map
+    private GenericRecord buildRecordKey(Schema keySchema,
+            TableMetaData tableMetaData,
+            Map<String, Object> beforeImage,
+            Map<String, Object> afterImage) {
+        GenericRecord keyRecord = new GenericData.Record(keySchema);
+        for (org.apache.avro.Schema.Field f : keySchema.getFields()) {
+            String name = f.name();
+            Object raw = afterImage.get(name);
+            if (raw == null) {
+                raw = beforeImage.get(name);
+            }
+            Object converted = convertValueToSchemaType(raw, f.schema(), name);
+            keyRecord.put(name, converted);
         }
-        return tableRecord;
+        return keyRecord;
+    }
+
+    // Create a table image record ("beforeImage" or "afterImage") using the envelope schema
+    private GenericRecord createTableRecord(Schema envelopeSchema, String fieldName, Map<String, Object> image) {
+        if (envelopeSchema == null || fieldName == null) {
+            return null;
+        }
+        Field field = envelopeSchema.getField(fieldName);
+        if (field == null) {
+            System.err.println("[KcopHandler] Envelope schema missing field: " + fieldName);
+            return null;
+        }
+        Schema fieldSchema = field.schema();
+        // If field is a union, pick the non-null record schema
+        if (fieldSchema.getType() == Type.UNION) {
+            for (Schema s : fieldSchema.getTypes()) {
+                if (s.getType() == Type.RECORD) {
+                    fieldSchema = s;
+                    break;
+                }
+            }
+        }
+        if (fieldSchema.getType() != Type.RECORD) {
+            System.err.println("[KcopHandler] Field " + fieldName + " is not a RECORD schema");
+            return null;
+        }
+
+        GenericRecord rec = new GenericData.Record(fieldSchema);
+        for (Schema.Field colField : fieldSchema.getFields()) {
+            String colName = colField.name();
+            Object raw = image != null ? image.get(colName) : null;
+            Object converted = convertValueToSchemaType(raw, colField.schema(), colName);
+            rec.put(colName, converted);
+        }
+        return rec;
+    }
+
+    // Defaults used when building key schema fields
+    private Object getDefaultForType(Type t) {
+        switch (t) {
+            case LONG:
+                return 0L;
+            case INT:
+                return 0;
+            case DOUBLE:
+                return 0.0;
+            case FLOAT:
+                return 0.0f;
+            case BOOLEAN:
+                return false;
+            case BYTES:
+                return java.nio.ByteBuffer.wrap(new byte[0]);
+            case STRING:
+                return "";
+            default:
+                return null;
+        }
     }
 
     // Overload: enforces yyyy-MM-dd for DATE logical type and for fields named like DT_*
     protected Object convertValueToSchemaType(Object value, Schema schema, String fieldName) {
-        if (value == null) return schemaTypeConverter.getDefaultValue(schema);
+        if (value == null) {
+            return schemaTypeConverter.getDefaultValue(schema);
+        }
         Object out = convertValueToSchemaType(value, schema); // reuse existing logic
         try {
             String logical = schema.getProp("logicalType");
@@ -309,8 +426,11 @@ public class KcopHandler extends AbstractHandler {
                 int cutIdx = -1;
                 int spaceIdx = s.indexOf(' ');
                 int tIdx = s.indexOf('T');
-                if (spaceIdx > 0) cutIdx = spaceIdx;
-                else if (tIdx > 0) cutIdx = tIdx;
+                if (spaceIdx > 0) {
+                    cutIdx = spaceIdx; 
+                }else if (tIdx > 0) {
+                    cutIdx = tIdx;
+                }
                 String dateOnly = cutIdx > 0 ? s.substring(0, cutIdx) : s;
                 // handle compact yyyyMMdd
                 if (dateOnly.matches("\\d{8}")) {
@@ -367,8 +487,11 @@ public class KcopHandler extends AbstractHandler {
                         int cutIdx = -1;
                         int spaceIdx = norm.indexOf(' ');
                         int tIdx = norm.indexOf('T');
-                        if (spaceIdx > 0) cutIdx = spaceIdx;
-                        else if (tIdx > 0) cutIdx = tIdx;
+                        if (spaceIdx > 0) {
+                            cutIdx = spaceIdx; 
+                        }else if (tIdx > 0) {
+                            cutIdx = tIdx;
+                        }
                         String dateOnly = cutIdx > 0 ? norm.substring(0, cutIdx) : norm;
                         if (dateOnly.matches("\\d{8}")) {
                             return dateOnly.substring(0, 4) + "-" + dateOnly.substring(4, 6) + "-" + dateOnly.substring(6, 8);
@@ -391,8 +514,8 @@ public class KcopHandler extends AbstractHandler {
                         for (int i = 0; i < fracAndRest.length(); i++) {
                             char c = fracAndRest.charAt(i);
                             if (Character.isDigit(c)) {
-                                digits.append(c); 
-                            }else {
+                                digits.append(c);
+                            } else {
                                 break;
                             }
                         }
@@ -506,7 +629,6 @@ public class KcopHandler extends AbstractHandler {
             return null;
         }
     }
-
     // Resolve topic from template; fallback keeps previous behavior if template is missing
     protected String resolveTopic(String template, String fullyQualifiedTableName) {
         if (template == null || template.isEmpty()) {
@@ -515,6 +637,89 @@ public class KcopHandler extends AbstractHandler {
         }
         return template.replace("${fullyQualifiedTableName}", fullyQualifiedTableName);
     }
+
+    // Safely obtain numeric scale from ColumnMetaData using reflection; returns -1 if unavailable
+        private int getNumericScale(ColumnMetaData col) {
+            if (col == null) {
+                return -1;
+            }
+            String[] candidates = new String[] {
+                "getScale",
+                "getColumnScale",
+                "getFractionalDigits",
+                "getDecimalDigits"
+            };
+            for (String mName : candidates) {
+                try {
+                    Method m = col.getClass().getMethod(mName);
+                    Object v = m.invoke(col);
+                    if (v instanceof Number) {
+                        return ((Number) v).intValue();
+                    }
+                } catch (Exception ignore) {
+                    // try next candidate
+                }
+            }
+            // Some implementations encode scale in data type string like "NUMBER(p,s)"
+            try {
+                String dt = col.getDataType() != null ? col.getDataType().toString() : null;
+                if (dt != null) {
+                    int l = dt.indexOf('(');
+                    int r = dt.indexOf(')');
+                    if (l >= 0 && r > l) {
+                        String inside = dt.substring(l + 1, r);
+                        String[] parts = inside.split(",");
+                        if (parts.length == 2) {
+                            return Integer.parseInt(parts[1].trim());
+                        }
+                    }
+                }
+            } catch (Exception ignore) {
+            }
+            return -1; // unknown scale
+        }
+    
+        // Safely obtain numeric precision from ColumnMetaData using reflection; returns default 38 if unavailable
+        private int getNumericPrecision(ColumnMetaData col) {
+            if (col == null) {
+                return 38;
+            }
+            String[] candidates = new String[] {
+                "getPrecision",
+                "getColumnPrecision",
+                "getLength",
+                "getDisplaySize"
+            };
+            for (String mName : candidates) {
+                try {
+                    Method m = col.getClass().getMethod(mName);
+                    Object v = m.invoke(col);
+                    if (v instanceof Number) {
+                        return Math.max(1, ((Number) v).intValue());
+                    }
+                } catch (Exception ignore) {
+                    // try next candidate
+                }
+            }
+            // Parse precision from data type string, e.g., "NUMBER(p,s)" or "DECIMAL(p,s)"
+            try {
+                String dt = col.getDataType() != null ? col.getDataType().toString() : null;
+                if (dt != null) {
+                    int l = dt.indexOf('(');
+                    int r = dt.indexOf(')');
+                    if (l >= 0 && r > l) {
+                        String inside = dt.substring(l + 1, r);
+                        String[] parts = inside.split(",");
+                        if (parts.length >= 1) {
+                            return Math.max(1, Integer.parseInt(parts[0].trim()));
+                        }
+                    }
+                }
+            } catch (Exception ignore) {
+            }
+            // Reasonable default precision for NUMBER/DECIMAL when not provided
+            return 38;
+        }
 
     // Try to get operation/event timestamp in millis; fallback to System.currentTimeMillis()
     private long extractOperationTimestampMillis(DsEvent event, DsTransaction tx, DsOperation operation) {

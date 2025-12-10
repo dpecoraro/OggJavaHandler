@@ -50,12 +50,6 @@ public class KcopHandlerTest {
     }
 
     @Test
-    void testBuildKeyUnknown() {
-        String key = handler.buildKey(null);
-        assertEquals("unknown", key);
-    }
-
-    @Test
     void testExtractValueBytesToBase64() {
         byte[] bytes = new byte[] {1, 2, 3, 4};
         Object out = handler.extractValue(bytes);
