@@ -243,13 +243,10 @@ public class KcopHandler extends AbstractHandler {
                 lastRegisteredTopic = topic;
             }
 
-            // Log full Avro schema and record if debug enabled
-            if (debugLogs) {
-                System.out.println(">>> [KcopHandler] Envelope schema (pretty): " + avroSchema.toString(true));
-                System.out.println(">>> [KcopHandler] CDC Record payload: " + cdcRecord);
-                System.out.println(">>> [KcopHandler] BeforeImage map: " + beforeImage);
-                System.out.println(">>> [KcopHandler] AfterImage map: " + afterImage);
-            }
+            System.out.println(">>> [KcopHandler] Envelope schema (pretty): " + avroSchema.toString(true));
+            System.out.println(">>> [KcopHandler] CDC Record payload: " + cdcRecord);
+            System.out.println(">>> [KcopHandler] BeforeImage map: " + beforeImage);
+            System.out.println(">>> [KcopHandler] AfterImage map: " + afterImage);
 
             // Send with Avro-serialized key as String (KafkaAvroSerializer will use Avro STRING)
             ProducerRecord<Object, GenericRecord> producerRecord = new ProducerRecord<>(topic, keyStr, cdcRecord);
@@ -268,10 +265,8 @@ public class KcopHandler extends AbstractHandler {
                 }
             });
 
-            if (debugLogs) {
-                System.out.println(">>> SCHEMA: " + avroSchema.toString(true));
-                System.out.println(">>> CDC Record: " + cdcRecord);
-            }
+            System.out.println(">>> SCHEMA: " + avroSchema.toString(true));
+            System.out.println(">>> CDC Record: " + cdcRecord);
         } catch (Exception ex) {
             System.err.println("[KcopHandler] Error creating/sending Avro: " + ex.getMessage());
         }
@@ -279,7 +274,9 @@ public class KcopHandler extends AbstractHandler {
 
     // Build key from transaction (ASCII-only digits). Strips non-digits to avoid strange characters and ensures compatibility with STRING key subject.
     protected String buildKey(DsTransaction tx) {
-        if (tx == null || tx.getTranID() == null) return "unknown";
+        if (tx == null || tx.getTranID() == null) {
+            return "unknown";
+        }
         String s = tx.getTranID().toString();
         String digits = s.replaceAll("\\D+", "");
         return digits.isEmpty() ? "unknown" : digits;
@@ -291,10 +288,41 @@ public class KcopHandler extends AbstractHandler {
         GenericRecord tableRecord = new GenericData.Record(tableSchema);
         for (Field field : tableSchema.getFields()) {
             Object value = data.get(field.name());
-            Object convertedValue = convertValueToSchemaType(value, field.schema());
+            // use overload with field name to enforce date-only for DT_* columns
+            Object convertedValue = convertValueToSchemaType(value, field.schema(), field.name()); // changed
             tableRecord.put(field.name(), convertedValue);
         }
         return tableRecord;
+    }
+
+    // Overload: enforces yyyy-MM-dd for DATE logical type and for fields named like DT_*
+    protected Object convertValueToSchemaType(Object value, Schema schema, String fieldName) {
+        if (value == null) return schemaTypeConverter.getDefaultValue(schema);
+        Object out = convertValueToSchemaType(value, schema); // reuse existing logic
+        try {
+            String logical = schema.getProp("logicalType");
+            boolean isDateLogical = logical != null && "DATE".equalsIgnoreCase(logical);
+            boolean isDateFieldName = fieldName != null && fieldName.toUpperCase().startsWith("DT_");
+            if ((isDateLogical || isDateFieldName) && out instanceof CharSequence) {
+                String s = out.toString().replace('/', '-');
+                // cut at space or 'T' (remove time and any fraction completely)
+                int cutIdx = -1;
+                int spaceIdx = s.indexOf(' ');
+                int tIdx = s.indexOf('T');
+                if (spaceIdx > 0) cutIdx = spaceIdx;
+                else if (tIdx > 0) cutIdx = tIdx;
+                String dateOnly = cutIdx > 0 ? s.substring(0, cutIdx) : s;
+                // handle compact yyyyMMdd
+                if (dateOnly.matches("\\d{8}")) {
+                    return dateOnly.substring(0, 4) + "-" + dateOnly.substring(4, 6) + "-" + dateOnly.substring(6, 8);
+                }
+                // return strictly yyyy-MM-dd
+                return dateOnly.length() >= 10 ? dateOnly.substring(0, 10) : dateOnly;
+            }
+        } catch (Exception ignore) {
+            // fall back to original
+        }
+        return out;
     }
 
     protected Object convertValueToSchemaType(Object value, Schema schema) {
@@ -333,7 +361,7 @@ public class KcopHandler extends AbstractHandler {
                     String s = value.toString();
                     String logical = schema.getProp("logicalType");
 
-                    // DATE: strictly yyyy-MM-dd
+                    // DATE: strictly yyyy-MM-dd (remove 'T' and any time/fraction)
                     if (logical != null && "DATE".equalsIgnoreCase(logical)) {
                         String norm = s.replace('/', '-');
                         int cutIdx = -1;
@@ -345,7 +373,6 @@ public class KcopHandler extends AbstractHandler {
                         if (dateOnly.matches("\\d{8}")) {
                             return dateOnly.substring(0, 4) + "-" + dateOnly.substring(4, 6) + "-" + dateOnly.substring(6, 8);
                         }
-                        // Trim to first 10 chars if already yyyy-MM-dd...
                         return dateOnly.length() >= 10 ? dateOnly.substring(0, 10) : dateOnly;
                     }
 
@@ -363,15 +390,20 @@ public class KcopHandler extends AbstractHandler {
                         StringBuilder digits = new StringBuilder();
                         for (int i = 0; i < fracAndRest.length(); i++) {
                             char c = fracAndRest.charAt(i);
-                            if (Character.isDigit(c)) digits.append(c);
-                            else break;
+                            if (Character.isDigit(c)) {
+                                digits.append(c); 
+                            }else {
+                                break;
+                            }
                         }
                         String frac = digits.toString();
                         if (frac.length() > 12) {
                             frac = frac.substring(0, 12);
                         } else if (frac.length() < 12) {
                             StringBuilder pad = new StringBuilder(frac);
-                            while (pad.length() < 12) pad.append('0');
+                            while (pad.length() < 12) {
+                                pad.append('0');
+                            }
                             frac = pad.toString();
                         }
                         String remainder = iso.substring(dotIdx + 1 + digits.length(), endIdx);
@@ -408,8 +440,12 @@ public class KcopHandler extends AbstractHandler {
         // nanos: 0..999_999_999 (9 digits), pad right to 12 digits
         String frac9 = String.format("%09d", ldt.getNano());
         StringBuilder frac12 = new StringBuilder(frac9);
-        while (frac12.length() < 12) frac12.append('0');
-        if (frac12.length() > 12) frac12.setLength(12);
+        while (frac12.length() < 12) {
+            frac12.append('0');
+        }
+        if (frac12.length() > 12) {
+            frac12.setLength(12);
+        }
         return base + "." + frac12;
     }
 
@@ -542,24 +578,24 @@ public class KcopHandler extends AbstractHandler {
 
     // Try to get user name from event/tx/operation via common GG methods; fallback null
     private String extractUser(DsEvent event, DsTransaction tx, DsOperation operation) {
-        String u;
+        String user;
         // Common method names across GG APIs
         String[] methodCandidates = new String[]{
             "getUserName", "getUsername", "getUser", "getJobUser", "getOwner"
         };
         // Try on tx first
-        u = tryGetStringViaReflection(tx, methodCandidates);
-        if (u != null && !u.isEmpty()) {
-            return u;
+        user = tryGetStringViaReflection(tx, methodCandidates);
+        if (user != null && !user.isEmpty()) {
+            return user;
         }
         // Then on operation
-        u = tryGetStringViaReflection(operation, methodCandidates);
-        if (u != null && !u.isEmpty()) {
-            return u;
+        user = tryGetStringViaReflection(operation, methodCandidates);
+        if (user != null && !user.isEmpty()) {
+            return user;
         }
         // Then on event
-        u = tryGetStringViaReflection(event, methodCandidates);
-        return (u != null && !u.isEmpty()) ? u : null;
+        user = tryGetStringViaReflection(event, methodCandidates);
+        return (user != null && !user.isEmpty()) ? user : null;
     }
 
     // Helper: call the first available method that returns a String
