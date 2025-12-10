@@ -5,6 +5,10 @@ import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.Date;
 import java.util.LinkedHashMap;
@@ -18,7 +22,6 @@ import org.apache.avro.Schema.Field;
 import org.apache.avro.Schema.Type;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
-import org.apache.commons.codec.binary.Base32;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -203,34 +206,65 @@ public class KcopHandler extends AbstractHandler {
             DateFormatHandler dateHandler = new DateFormatHandler();
             cdcRecord.put("A_ENTTYP", opType);
             cdcRecord.put("A_CCID", tx.getTranID() != null ? tx.getTranID().toString() : null);
-            cdcRecord.put("A_TIMSTAMP", dateHandler.TimeStampNormalizeFromMillis(extractOperationTimestampMillis(event, tx, operation)));
+            // Use event/operation timestamp with space separator and 12 fractional digits
+            cdcRecord.put("A_TIMSTAMP", formatMillisSpace12(extractOperationTimestampMillis(event, tx, operation))); // changed
             String ggUser = extractUser(event, tx, operation);
-            cdcRecord.put("A_JOBUSER", ggUser != null ? ggUser : "");
-            cdcRecord.put("A_USER", ggUser != null ? ggUser : "");
+            // Fallback to system user if missing
+            String sysUser = System.getProperty("user.name", "unknown");
+            cdcRecord.put("A_JOBUSER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser); // changed
+            cdcRecord.put("A_USER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser);    // changed
 
             // Build topic and string key
             final String topic = resolveTopic(topicMappingTemplate, table);
-            final String keyStr = buildKey(tx);
+            final String keyStr = buildKey(tx); // sanitized key
+
+            // Log control fields and key
+            System.out.println(">>> [KcopHandler] Prepared message:"
+                    + " topic=" + topic
+                    + " key=" + keyStr
+                    + " A_ENTTYP=" + cdcRecord.get("A_ENTTYP")
+                    + " A_CCID=" + cdcRecord.get("A_CCID")
+                    + " A_TIMSTAMP=" + cdcRecord.get("A_TIMSTAMP")
+                    + " A_JOBUSER=" + cdcRecord.get("A_JOBUSER")
+                    + " A_USER=" + cdcRecord.get("A_USER"));
 
             // Register schemas once per topic (value and key) with STRING for key
             if (lastRegisteredTopic == null || !lastRegisteredTopic.equals(topic)) {
-                schemaRegistryClient.registerIfNeeded(topic + "-value", avroSchema);
-                schemaRegistryClient.registerIfNeeded(topic + "-key", Schema.create(Type.STRING)); // ensure STRING subject
+                String valueSubject = topic + "-value";
+                String keySubject = topic + "-key";
+                schemaRegistryClient.registerIfNeeded(valueSubject, avroSchema);
+                schemaRegistryClient.registerIfNeeded(keySubject, Schema.create(Type.STRING)); // ensure STRING subject
+                System.out.println(">>> [KcopHandler] Schema registry subjects registered:"
+                        + " valueSubject=" + valueSubject
+                        + " keySubject=" + keySubject);
+                System.out.println(">>> [KcopHandler] Value schema: " + avroSchema.getFullName()
+                        + " namespace=" + avroSchema.getNamespace()
+                        + " name=" + avroSchema.getName());
                 lastRegisteredTopic = topic;
+            }
+
+            // Log full Avro schema and record if debug enabled
+            if (debugLogs) {
+                System.out.println(">>> [KcopHandler] Envelope schema (pretty): " + avroSchema.toString(true));
+                System.out.println(">>> [KcopHandler] CDC Record payload: " + cdcRecord);
+                System.out.println(">>> [KcopHandler] BeforeImage map: " + beforeImage);
+                System.out.println(">>> [KcopHandler] AfterImage map: " + afterImage);
             }
 
             // Send with Avro-serialized key as String (KafkaAvroSerializer will use Avro STRING)
             ProducerRecord<Object, GenericRecord> producerRecord = new ProducerRecord<>(topic, keyStr, cdcRecord);
-            System.out.println(">>> [KcopHandler] Sending bootstrap=" + kafkaBootstrapServers
-                    + " topic=" + topic + " key=" + keyStr);
+            System.out.println(">>> [KcopHandler] Sending to Kafka: bootstrap=" + kafkaBootstrapServers
+                    + " topic=" + topic
+                    + " key=" + keyStr);
 
             kafkaProducer.send(producerRecord, (metadata, exception) -> {
                 if (exception != null) {
                     System.err.println("[KcopHandler] Kafka send error: " + exception.getMessage());
                 } else {
-                    System.out.println(">>> [KcopHandler] Sent topic=" + metadata.topic()
+                    System.out.println(">>> [KcopHandler] Sent OK: topic=" + metadata.topic()
                             + " partition=" + metadata.partition()
-                            + " offset=" + metadata.offset());
+                            + " offset=" + metadata.offset()
+                            + " timestamp=" + metadata.timestamp());
                 }
             });
 
@@ -243,49 +277,12 @@ public class KcopHandler extends AbstractHandler {
         }
     }
 
-    // Build key from transaction (ASCII-safe). If ID is binary or contains non-ASCII, encode with Base32.
+    // Build key from transaction (ASCII-only digits). Strips non-digits to avoid strange characters and ensures compatibility with STRING key subject.
     protected String buildKey(DsTransaction tx) {
         if (tx == null || tx.getTranID() == null) return "unknown";
-        Object id = tx.getTranID();
-        try {
-            if (id instanceof byte[]) {
-                Base32 b32 = new Base32();
-                return b32.encodeToString((byte[]) id).replace("=", ""); // strip padding
-            }
-            // If ID object has a bytes accessor, try reflectively
-            try {
-                Method m = id.getClass().getMethod("getBytes");
-                Object bytes = m.invoke(id);
-                if (bytes instanceof byte[]) {
-                    Base32 b32 = new Base32();
-                    return b32.encodeToString((byte[]) bytes).replace("=", "");
-                }
-            } catch (Exception ignore) {
-                // fallback to string normalization
-            }
-            // Normalize to ASCII: replace non-ASCII with hex and collapse spaces
-            String s = id.toString();
-            StringBuilder out = new StringBuilder();
-            for (int i = 0; i < s.length(); i++) {
-                char c = s.charAt(i);
-                if (c >= 32 && c <= 126) {
-                    out.append(c);
-                } else {
-                    // non-ASCII: append hex codepoint
-                    out.append(String.format("_%02X", (int) c));
-                }
-            }
-            String normalized = out.toString().trim();
-            if (normalized.isEmpty()) {
-                // last resort: Base32 of original UTF-8 bytes
-                Base32 b32 = new Base32();
-                return b32.encodeToString(s.getBytes(java.nio.charset.StandardCharsets.UTF_8)).replace("=", "");
-            }
-            return normalized;
-        } catch (Exception e) {
-            System.err.println("[KcopHandler] Failed to build ASCII-safe key: " + e.getMessage());
-            return "unknown";
-        }
+        String s = tx.getTranID().toString();
+        String digits = s.replaceAll("\\D+", "");
+        return digits.isEmpty() ? "unknown" : digits;
     }
 
     private GenericRecord createTableRecord(Schema envelopeSchema, String fieldName, Map<String, Object> data) {
@@ -336,51 +333,49 @@ public class KcopHandler extends AbstractHandler {
                     String s = value.toString();
                     String logical = schema.getProp("logicalType");
 
-                    // Normalize DATE to yyyy-MM-dd (ano-mes-dia)
+                    // DATE: strictly yyyy-MM-dd
                     if (logical != null && "DATE".equalsIgnoreCase(logical)) {
-                        DateFormatHandler dateHandler = new DateFormatHandler();
-                        return dateHandler.NormalizeDateString(s);
+                        String norm = s.replace('/', '-');
+                        int cutIdx = -1;
+                        int spaceIdx = norm.indexOf(' ');
+                        int tIdx = norm.indexOf('T');
+                        if (spaceIdx > 0) cutIdx = spaceIdx;
+                        else if (tIdx > 0) cutIdx = tIdx;
+                        String dateOnly = cutIdx > 0 ? norm.substring(0, cutIdx) : norm;
+                        if (dateOnly.matches("\\d{8}")) {
+                            return dateOnly.substring(0, 4) + "-" + dateOnly.substring(4, 6) + "-" + dateOnly.substring(6, 8);
+                        }
+                        // Trim to first 10 chars if already yyyy-MM-dd...
+                        return dateOnly.length() >= 10 ? dateOnly.substring(0, 10) : dateOnly;
                     }
 
-                    // Normalize TIMESTAMP to ISO with 'T' and 18-digit fractional seconds
+                    // TIMESTAMP: ISO with 'T' and 12 fractional digits
                     if (logical != null && "TIMESTAMP".equalsIgnoreCase(logical)) {
-                        // Replace space with 'T' if present
                         String iso = s.replace(' ', 'T');
-
                         int dotIdx = iso.indexOf('.');
                         if (dotIdx < 0) {
-                            // No fractional part: append 18 zeros
-                            iso = iso + ".000000000000000000";
-                        } else {
-                            // Pad or trim fractional seconds to 18 digits
-                            int endIdx = iso.indexOf('Z') > 0 ? iso.indexOf('Z') : iso.length();
-                            String prefix = iso.substring(0, dotIdx + 1);
-                            String fracAndRest = iso.substring(dotIdx + 1, endIdx);
-                            // Keep only digits in fractional part
-                            StringBuilder digits = new StringBuilder();
-                            for (int i = 0; i < fracAndRest.length(); i++) {
-                                char c = fracAndRest.charAt(i);
-                                if (Character.isDigit(c)) {
-                                    digits.append(c);
-                                } else {
-                                    break; // stop at first non-digit
-
-                                }
-                            }
-                            String frac = digits.toString();
-                            if (frac.length() > 18) {
-                                frac = frac.substring(0, 18);
-                            } else if (frac.length() < 18) {
-                                StringBuilder pad = new StringBuilder(frac);
-                                while (pad.length() < 18) {
-                                    pad.append('0');
-                                }
-                                frac = pad.toString();
-                            }
-                            String remainder = iso.substring(dotIdx + 1 + digits.length());
-                            iso = prefix + frac + remainder;
+                            // No fractional part: append 12 zeros
+                            return iso + ".000000000000";
                         }
-                        return iso;
+                        int endIdx = iso.indexOf('Z') > 0 ? iso.indexOf('Z') : iso.length();
+                        String prefix = iso.substring(0, dotIdx + 1);
+                        String fracAndRest = iso.substring(dotIdx + 1, endIdx);
+                        StringBuilder digits = new StringBuilder();
+                        for (int i = 0; i < fracAndRest.length(); i++) {
+                            char c = fracAndRest.charAt(i);
+                            if (Character.isDigit(c)) digits.append(c);
+                            else break;
+                        }
+                        String frac = digits.toString();
+                        if (frac.length() > 12) {
+                            frac = frac.substring(0, 12);
+                        } else if (frac.length() < 12) {
+                            StringBuilder pad = new StringBuilder(frac);
+                            while (pad.length() < 12) pad.append('0');
+                            frac = pad.toString();
+                        }
+                        String remainder = iso.substring(dotIdx + 1 + digits.length(), endIdx);
+                        return prefix + frac + remainder + (endIdx < iso.length() ? iso.substring(endIdx) : "");
                     }
 
                     return s;
@@ -404,6 +399,18 @@ public class KcopHandler extends AbstractHandler {
             System.err.println("[KcopHandler] Error converting value " + value + " to type " + type + ": " + e.getMessage());
             return schemaTypeConverter.getDefaultValue(schema);
         }
+    }
+
+    // Format millis to "yyyy-MM-dd HH:mm:ss.SSSSSSSSSSSS" (space separator, 12 fractional digits)
+    private String formatMillisSpace12(long millis) {
+        LocalDateTime ldt = LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault());
+        String base = ldt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        // nanos: 0..999_999_999 (9 digits), pad right to 12 digits
+        String frac9 = String.format("%09d", ldt.getNano());
+        StringBuilder frac12 = new StringBuilder(frac9);
+        while (frac12.length() < 12) frac12.append('0');
+        if (frac12.length() > 12) frac12.setLength(12);
+        return base + "." + frac12;
     }
 
     private String getColumnNameByIndex(int index, TableMetaData tableMetaData) {
