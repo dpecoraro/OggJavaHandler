@@ -4,6 +4,8 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -27,7 +29,6 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 
-import com.santander.goldengate.helpers.DateFormatHandler;
 import com.santander.goldengate.helpers.EntityTypeFormatHandler;
 import com.santander.goldengate.helpers.SchemaTypeConverter;
 
@@ -58,7 +59,6 @@ public class KcopHandler extends AbstractHandler {
     private String kafkaBootstrapServers;
     private SchemaRegistryClient schemaRegistryClient;
 
-    private volatile boolean debugLogs = false; // simple debug flag
     private String lastRegisteredTopic = null;   // avoid repeated registry in hot loops
 
     public KcopHandler() {
@@ -121,7 +121,6 @@ public class KcopHandler extends AbstractHandler {
             if (topicMappingTemplate != null) {
                 System.out.println(">>> [KcopHandler] Topic template: " + topicMappingTemplate);
             }
-            this.debugLogs = Boolean.parseBoolean(kafkaProps.getProperty("gg.handler.kafkahandler.debugLogs", "false"));
         } catch (IOException | NoSuchAttributeException ex) {
             System.err.println("[KcopHandler] Error initializing Kafka Producer: " + ex.getMessage());
         }
@@ -204,7 +203,6 @@ public class KcopHandler extends AbstractHandler {
                 cdcRecord.put("afterImage", null);
             }
 
-            DateFormatHandler dateHandler = new DateFormatHandler();
             cdcRecord.put("A_ENTTYP", opType);
             cdcRecord.put("A_CCID", tx.getTranID() != null ? tx.getTranID().toString() : null);
             // Use event/operation timestamp with space separator and 12 fractional digits
@@ -427,8 +425,8 @@ public class KcopHandler extends AbstractHandler {
                 int spaceIdx = s.indexOf(' ');
                 int tIdx = s.indexOf('T');
                 if (spaceIdx > 0) {
-                    cutIdx = spaceIdx; 
-                }else if (tIdx > 0) {
+                    cutIdx = spaceIdx;
+                } else if (tIdx > 0) {
                     cutIdx = tIdx;
                 }
                 String dateOnly = cutIdx > 0 ? s.substring(0, cutIdx) : s;
@@ -481,6 +479,16 @@ public class KcopHandler extends AbstractHandler {
                     String s = value.toString();
                     String logical = schema.getProp("logicalType");
 
+                    // DECIMAL: format as string with fixed scale (e.g., "0.00")
+                    if (logical != null && "DECIMAL".equalsIgnoreCase(logical)) {
+                        int scale = 2;
+                        try {
+                            String prop = schema.getProp("scale");
+                            if (prop != null && !prop.isEmpty()) scale = Integer.parseInt(prop);
+                        } catch (NumberFormatException ignore) {}
+                        return formatDecimalString(s, scale);
+                    }
+
                     // DATE: strictly yyyy-MM-dd (remove 'T' and any time/fraction)
                     if (logical != null && "DATE".equalsIgnoreCase(logical)) {
                         String norm = s.replace('/', '-');
@@ -488,8 +496,8 @@ public class KcopHandler extends AbstractHandler {
                         int spaceIdx = norm.indexOf(' ');
                         int tIdx = norm.indexOf('T');
                         if (spaceIdx > 0) {
-                            cutIdx = spaceIdx; 
-                        }else if (tIdx > 0) {
+                            cutIdx = spaceIdx;
+                        } else if (tIdx > 0) {
                             cutIdx = tIdx;
                         }
                         String dateOnly = cutIdx > 0 ? norm.substring(0, cutIdx) : norm;
@@ -554,6 +562,33 @@ public class KcopHandler extends AbstractHandler {
             System.err.println("[KcopHandler] Error converting value " + value + " to type " + type + ": " + e.getMessage());
             return schemaTypeConverter.getDefaultValue(schema);
         }
+    }
+
+    // Helper: format decimal string with fixed scale (no scientific notation)
+    private String formatDecimalString(String raw, int scale) {
+        try {
+            if (raw == null || raw.trim().isEmpty()) return zeroOfScale(scale);
+            String norm = raw.trim().replace(',', '.');
+            BigDecimal bd = new BigDecimal(norm);
+            bd = bd.setScale(scale, RoundingMode.HALF_UP);
+            return bd.toPlainString();
+        } catch (Exception e) {
+            // Fallback: try parse as number; else return zero with scale
+            try {
+                BigDecimal bd = new BigDecimal(String.valueOf(Double.parseDouble(raw)));
+                bd = bd.setScale(scale, RoundingMode.HALF_UP);
+                return bd.toPlainString();
+            } catch (Exception ignore) {
+                return zeroOfScale(scale);
+            }
+        }
+    }
+
+    private String zeroOfScale(int scale) {
+        if (scale <= 0) return "0";
+        StringBuilder sb = new StringBuilder("0.");
+        for (int i = 0; i < scale; i++) sb.append('0');
+        return sb.toString();
     }
 
     // Format millis to "yyyy-MM-dd HH:mm:ss.SSSSSSSSSSSS" (space separator, 12 fractional digits)
@@ -629,6 +664,7 @@ public class KcopHandler extends AbstractHandler {
             return null;
         }
     }
+
     // Resolve topic from template; fallback keeps previous behavior if template is missing
     protected String resolveTopic(String template, String fullyQualifiedTableName) {
         if (template == null || template.isEmpty()) {
@@ -639,87 +675,87 @@ public class KcopHandler extends AbstractHandler {
     }
 
     // Safely obtain numeric scale from ColumnMetaData using reflection; returns -1 if unavailable
-        private int getNumericScale(ColumnMetaData col) {
-            if (col == null) {
-                return -1;
-            }
-            String[] candidates = new String[] {
-                "getScale",
-                "getColumnScale",
-                "getFractionalDigits",
-                "getDecimalDigits"
-            };
-            for (String mName : candidates) {
-                try {
-                    Method m = col.getClass().getMethod(mName);
-                    Object v = m.invoke(col);
-                    if (v instanceof Number) {
-                        return ((Number) v).intValue();
-                    }
-                } catch (Exception ignore) {
-                    // try next candidate
-                }
-            }
-            // Some implementations encode scale in data type string like "NUMBER(p,s)"
-            try {
-                String dt = col.getDataType() != null ? col.getDataType().toString() : null;
-                if (dt != null) {
-                    int l = dt.indexOf('(');
-                    int r = dt.indexOf(')');
-                    if (l >= 0 && r > l) {
-                        String inside = dt.substring(l + 1, r);
-                        String[] parts = inside.split(",");
-                        if (parts.length == 2) {
-                            return Integer.parseInt(parts[1].trim());
-                        }
-                    }
-                }
-            } catch (Exception ignore) {
-            }
-            return -1; // unknown scale
+    private int getNumericScale(ColumnMetaData col) {
+        if (col == null) {
+            return -1;
         }
-    
-        // Safely obtain numeric precision from ColumnMetaData using reflection; returns default 38 if unavailable
-        private int getNumericPrecision(ColumnMetaData col) {
-            if (col == null) {
-                return 38;
-            }
-            String[] candidates = new String[] {
-                "getPrecision",
-                "getColumnPrecision",
-                "getLength",
-                "getDisplaySize"
-            };
-            for (String mName : candidates) {
-                try {
-                    Method m = col.getClass().getMethod(mName);
-                    Object v = m.invoke(col);
-                    if (v instanceof Number) {
-                        return Math.max(1, ((Number) v).intValue());
-                    }
-                } catch (Exception ignore) {
-                    // try next candidate
-                }
-            }
-            // Parse precision from data type string, e.g., "NUMBER(p,s)" or "DECIMAL(p,s)"
+        String[] candidates = new String[]{
+            "getScale",
+            "getColumnScale",
+            "getFractionalDigits",
+            "getDecimalDigits"
+        };
+        for (String mName : candidates) {
             try {
-                String dt = col.getDataType() != null ? col.getDataType().toString() : null;
-                if (dt != null) {
-                    int l = dt.indexOf('(');
-                    int r = dt.indexOf(')');
-                    if (l >= 0 && r > l) {
-                        String inside = dt.substring(l + 1, r);
-                        String[] parts = inside.split(",");
-                        if (parts.length >= 1) {
-                            return Math.max(1, Integer.parseInt(parts[0].trim()));
-                        }
-                    }
+                Method m = col.getClass().getMethod(mName);
+                Object v = m.invoke(col);
+                if (v instanceof Number) {
+                    return ((Number) v).intValue();
                 }
             } catch (Exception ignore) {
+                // try next candidate
             }
-            // Reasonable default precision for NUMBER/DECIMAL when not provided
+        }
+        // Some implementations encode scale in data type string like "NUMBER(p,s)"
+        try {
+            String dt = col.getDataType() != null ? col.getDataType().toString() : null;
+            if (dt != null) {
+                int l = dt.indexOf('(');
+                int r = dt.indexOf(')');
+                if (l >= 0 && r > l) {
+                    String inside = dt.substring(l + 1, r);
+                    String[] parts = inside.split(",");
+                    if (parts.length == 2) {
+                        return Integer.parseInt(parts[1].trim());
+                    }
+                }
+            }
+        } catch (Exception ignore) {
+        }
+        return -1; // unknown scale
+    }
+
+    // Safely obtain numeric precision from ColumnMetaData using reflection; returns default 38 if unavailable
+    private int getNumericPrecision(ColumnMetaData col) {
+        if (col == null) {
             return 38;
         }
+        String[] candidates = new String[]{
+            "getPrecision",
+            "getColumnPrecision",
+            "getLength",
+            "getDisplaySize"
+        };
+        for (String mName : candidates) {
+            try {
+                Method m = col.getClass().getMethod(mName);
+                Object v = m.invoke(col);
+                if (v instanceof Number) {
+                    return Math.max(1, ((Number) v).intValue());
+                }
+            } catch (Exception ignore) {
+                // try next candidate
+            }
+        }
+        // Parse precision from data type string, e.g., "NUMBER(p,s)" or "DECIMAL(p,s)"
+        try {
+            String dt = col.getDataType() != null ? col.getDataType().toString() : null;
+            if (dt != null) {
+                int l = dt.indexOf('(');
+                int r = dt.indexOf(')');
+                if (l >= 0 && r > l) {
+                    String inside = dt.substring(l + 1, r);
+                    String[] parts = inside.split(",");
+                    if (parts.length >= 1) {
+                        return Math.max(1, Integer.parseInt(parts[0].trim()));
+                    }
+                }
+            }
+        } catch (Exception ignore) {
+        }
+        // Reasonable default precision for NUMBER/DECIMAL when not provided
+        return 38;
+    }
 
     // Try to get operation/event timestamp in millis; fallback to System.currentTimeMillis()
     private long extractOperationTimestampMillis(DsEvent event, DsTransaction tx, DsOperation operation) {
