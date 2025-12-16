@@ -414,27 +414,42 @@ public class KcopHandler extends AbstractHandler {
             return schemaTypeConverter.getDefaultValue(schema);
         }
         Object out = convertValueToSchemaType(value, schema); // reuse existing logic
+
         try {
             String logical = schema.getProp("logicalType");
             boolean isDateLogical = logical != null && "DATE".equalsIgnoreCase(logical);
             boolean isDateFieldName = fieldName != null && fieldName.toUpperCase().startsWith("DT_");
+
+            // Force DECIMAL formatting as string (e.g., "0.00") when logicalType=DECIMAL or specific field name
+            boolean isDecimalLogical = logical != null && "DECIMAL".equalsIgnoreCase(logical);
+            boolean isDecimalFieldName = "VL_ALCA_PROP".equalsIgnoreCase(fieldName); // explicit per feedback
+            if ((isDecimalLogical || isDecimalFieldName)) {
+                int scale = 2;
+                try {
+                    String prop = schema.getProp("scale");
+                    if (prop != null && !prop.isEmpty()) scale = Integer.parseInt(prop);
+                } catch (NumberFormatException ignore) {}
+                String rawStr = (value == null) ? null : value.toString();
+                String formatted = formatDecimalString(rawStr, scale);
+                System.out.println(">>> [KcopHandler] DECIMAL format applied field=" + fieldName
+                        + " logicalType=" + logical
+                        + " scale=" + scale
+                        + " in=" + rawStr
+                        + " out=" + formatted);
+                return formatted;
+            }
+
             if ((isDateLogical || isDateFieldName) && out instanceof CharSequence) {
                 String s = out.toString().replace('/', '-');
-                // cut at space or 'T' (remove time and any fraction completely)
                 int cutIdx = -1;
                 int spaceIdx = s.indexOf(' ');
                 int tIdx = s.indexOf('T');
-                if (spaceIdx > 0) {
-                    cutIdx = spaceIdx;
-                } else if (tIdx > 0) {
-                    cutIdx = tIdx;
-                }
+                if (spaceIdx > 0) cutIdx = spaceIdx;
+                else if (tIdx > 0) cutIdx = tIdx;
                 String dateOnly = cutIdx > 0 ? s.substring(0, cutIdx) : s;
-                // handle compact yyyyMMdd
                 if (dateOnly.matches("\\d{8}")) {
                     return dateOnly.substring(0, 4) + "-" + dateOnly.substring(4, 6) + "-" + dateOnly.substring(6, 8);
                 }
-                // return strictly yyyy-MM-dd
                 return dateOnly.length() >= 10 ? dateOnly.substring(0, 10) : dateOnly;
             }
         } catch (Exception ignore) {
