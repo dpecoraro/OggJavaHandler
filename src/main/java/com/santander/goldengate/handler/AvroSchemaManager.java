@@ -11,6 +11,7 @@ import java.util.regex.Pattern;
 import org.apache.avro.Schema;
 import org.apache.avro.Schema.Field;
 import org.apache.avro.Schema.Type;
+import org.apache.avro.SchemaBuilder;
 import org.apache.avro.generic.GenericDatumWriter;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.io.BinaryEncoder;
@@ -35,13 +36,13 @@ public class AvroSchemaManager {
         this.schemaTypeConverter = schemaTypeConverter;
     }
 
-    public Schema getOrCreateAvroSchema(String tableName, TableMetaData tableMetaData) {
-        Schema cached = schemaCache.get(tableName);
+    public Schema getOrCreateAvroSchema(String fullyQualifiedTableName, TableMetaData tableMetaData) {
+        Schema cached = schemaCache.get(fullyQualifiedTableName);
         if (cached != null) return cached;
 
-        final String tableRecordName = tableName != null && tableName.contains(".")
-                ? tableName.substring(tableName.lastIndexOf('.') + 1)
-                : tableName;
+        final String tableRecordName = fullyQualifiedTableName != null && fullyQualifiedTableName.contains(".")
+                ? fullyQualifiedTableName.substring(fullyQualifiedTableName.lastIndexOf('.') + 1)
+                : fullyQualifiedTableName;
 
         // Build table record schema
         List<Field> tableFields = new ArrayList<>();
@@ -58,7 +59,8 @@ public class AvroSchemaManager {
             }
         }
 
-        Schema tableSchema = Schema.createRecord(tableRecordName, "", namespacePrefix, false, tableFields);
+        // CHANGED: build the inner table record schema via our mapper (DECIMAL/DATE/TIMESTAMP handling)
+        Schema tableSchema = buildTableSchemaForColumns(tableMetaData, fullyQualifiedTableName);
 
         // Build envelope schema (nullable unions)
         List<Field> envelopeFields = new ArrayList<>();
@@ -72,7 +74,7 @@ public class AvroSchemaManager {
         envelopeFields.add(nullableUnionField("A_USER", Schema.create(Type.STRING)));
 
         Schema envelopeSchema = Schema.createRecord("AuditRecord", "", namespacePrefix, false, envelopeFields);
-        schemaCache.put(tableName, envelopeSchema);
+        schemaCache.put(fullyQualifiedTableName, envelopeSchema);
         return envelopeSchema;
     }
 
@@ -104,11 +106,7 @@ public class AvroSchemaManager {
         String logicalType;
 
         if (dataTypeName.contains("NUMBER") || dataTypeName.contains("DECIMAL") || dataTypeName.contains("NUMERIC")) {
-            if (scale > 0) {
-                baseSchema = Schema.create(Type.DOUBLE);
-            } else {
-                baseSchema = Schema.create(Type.LONG);
-            }
+            baseSchema = Schema.create(Type.STRING);
             logicalType = "DECIMAL";
         } else if (dataTypeName.contains("INT") || dataTypeName.contains("SMALLINT") || dataTypeName.contains("BIGINT")) {
             if (dataTypeName.contains("BIGINT")) {
@@ -156,7 +154,147 @@ public class AvroSchemaManager {
         return baseSchema;
     }
 
+    // Build the table (record) schema from metadata (DECIMAL->STRING with scale>=2; DATE->string; TIMESTAMP->string)
+    private Schema buildTableSchemaForColumns(TableMetaData tableMetaData, String fullyQualifiedTableName) {
+        // derive a safe short record name (fallback when metadata does not expose name)
+        String shortName = resolveShortName(tableMetaData, fullyQualifiedTableName);
 
+        SchemaBuilder.FieldAssembler<Schema> fields = SchemaBuilder
+            .record(shortName)
+            .namespace(namespacePrefix)
+            .fields();
+
+        int cols = (tableMetaData != null ? tableMetaData.getNumColumns() : 0);
+        for (int i = 0; i < cols; i++) {
+            ColumnMetaData col = tableMetaData.getColumnMetaData(i);
+            if (col == null) continue;
+
+            String colName = col.getColumnName();
+            String dt = col.getDataType() != null ? col.getDataType().toString().toUpperCase() : "";
+
+            // DECIMAL/NUMBER -> STRING with logicalType=DECIMAL and scale (default 2 if <=0)
+            if (isDecimalLike(dt)) {
+                Schema strDecimal = Schema.create(Schema.Type.STRING);
+                strDecimal.addProp("logicalType", "DECIMAL");
+                strDecimal.addProp("dbColumnName", colName);
+                int precision = safeGetPrecision(col, 38);
+                int scale = safeGetScale(col, 2);
+                if (scale <= 0) scale = 2;
+                strDecimal.addProp("precision", precision);
+                strDecimal.addProp("scale", scale);
+
+                fields.name(colName).type(strDecimal).withDefault("");
+                continue;
+            }
+
+            // DATE-like (DT_* or DATE datatype) -> STRING with logicalType=DATE
+            if ((colName != null && colName.toUpperCase().startsWith("DT_")) || dt.contains("DATE")) {
+                Schema dateStr = Schema.create(Schema.Type.STRING);
+                dateStr.addProp("logicalType", "DATE");
+                dateStr.addProp("dbColumnName", colName);
+                dateStr.addProp("length", 10);
+                fields.name(colName).type(dateStr).withDefault("");
+                continue;
+            }
+
+            // TIMESTAMP-like -> STRING with logicalType=TIMESTAMP
+            if (dt.contains("TIMESTAMP") || dt.contains("TIME")) {
+                Schema tsStr = Schema.create(Schema.Type.STRING);
+                tsStr.addProp("logicalType", "TIMESTAMP");
+                tsStr.addProp("dbColumnName", colName);
+                tsStr.addProp("length", 32);
+                fields.name(colName).type(tsStr).withDefault("");
+                continue;
+            }
+
+            // CHARACTER/default -> STRING with logicalType=CHARACTER
+            Schema str = Schema.create(Schema.Type.STRING);
+            str.addProp("logicalType", "CHARACTER");
+            str.addProp("dbColumnName", colName);
+            fields.name(colName).type(str).withDefault("");
+        }
+
+        return fields.endRecord();
+    }
+
+    // Resolve table short name from metadata or FQTN; fallback to "table_record"
+    private String resolveShortName(TableMetaData meta, String fullyQualifiedTableName) {
+        try {
+            if (meta != null) {
+                // Try: meta.getTableName().getShortName()
+                Object tn = meta.getClass().getMethod("getTableName").invoke(meta);
+                if (tn != null) {
+                    try {
+                        Object s = tn.getClass().getMethod("getShortName").invoke(tn);
+                        if (s instanceof String && !((String) s).isEmpty()) {
+                            return ((String) s).toString().toLowerCase();
+                        }
+                    } catch (Exception ignore) {}
+                    // Fallback: use toString and take last token after '.'
+                    String full = tn.toString();
+                    if (full != null && !full.isEmpty()) {
+                        int idx = full.lastIndexOf('.');
+                        String last = (idx >= 0 ? full.substring(idx + 1) : full);
+                        if (!last.isEmpty()) return last.toLowerCase();
+                    }
+                }
+            }
+        } catch (Exception ignore) {}
+        // fallback from fullyQualifiedTableName
+        if (fullyQualifiedTableName != null && !fullyQualifiedTableName.isEmpty()) {
+            int idx = fullyQualifiedTableName.lastIndexOf('.');
+            String last = (idx >= 0 ? fullyQualifiedTableName.substring(idx + 1) : fullyQualifiedTableName);
+            if (!last.isEmpty()) return last.toLowerCase();
+        }
+        return "table_record";
+    }
+
+    // Helpers for DECIMAL detection/metadata access. Reuse existing ones if already present.
+    private boolean isDecimalLike(String dtUpper) {
+        return dtUpper != null && (dtUpper.contains("NUMBER") || dtUpper.contains("DECIMAL") || dtUpper.contains("NUMERIC"));
+    }
+
+    private int safeGetScale(ColumnMetaData col, int def) {
+        String[] getters = { "getScale", "getColumnScale", "getFractionalDigits", "getDecimalDigits" };
+        for (String m : getters) {
+            try {
+                Object v = col.getClass().getMethod(m).invoke(col);
+                if (v instanceof Number) return ((Number) v).intValue();
+            } catch (Exception ignore) {}
+        }
+        try {
+            String dt = col.getDataType() != null ? col.getDataType().toString() : null;
+            if (dt != null) {
+                int l = dt.indexOf('('), r = dt.indexOf(')');
+                if (l >= 0 && r > l) {
+                    String[] parts = dt.substring(l + 1, r).split(",");
+                    if (parts.length == 2) return Integer.parseInt(parts[1].trim());
+                }
+            }
+        } catch (Exception ignore) {}
+        return def;
+    }
+
+    private int safeGetPrecision(ColumnMetaData col, int def) {
+        String[] getters = { "getPrecision", "getColumnPrecision", "getLength", "getDisplaySize" };
+        for (String m : getters) {
+            try {
+                Object v = col.getClass().getMethod(m).invoke(col);
+                if (v instanceof Number) return Math.max(1, ((Number) v).intValue());
+            } catch (Exception ignore) {}
+        }
+        try {
+            String dt = col.getDataType() != null ? col.getDataType().toString() : null;
+            if (dt != null) {
+                int l = dt.indexOf('('), r = dt.indexOf(')');
+                if (l >= 0 && r > l) {
+                    String[] parts = dt.substring(l + 1, r).split(",");
+                    if (parts.length >= 1) return Math.max(1, Integer.parseInt(parts[0].trim()));
+                }
+            }
+        } catch (Exception ignore) {}
+        return def;
+    }
 
     private ColumnMetaData safeGetColumnMetaData(TableMetaData tableMetaData, int index) {
         if (tableMetaData == null || index < 0) return null;
