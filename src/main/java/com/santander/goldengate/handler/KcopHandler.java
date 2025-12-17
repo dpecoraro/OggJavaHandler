@@ -408,44 +408,61 @@ public class KcopHandler extends AbstractHandler {
         }
     }
 
-    // Overload: enforces yyyy-MM-dd for DATE logical type and for fields named like DT_*
+    // Overload: enforce yyyy-MM-dd for DATE and handle DECIMAL according to schema type (STRING vs numeric)
     protected Object convertValueToSchemaType(Object value, Schema schema, String fieldName) {
-        if (value == null) {
-            return schemaTypeConverter.getDefaultValue(schema);
-        }
-        Object out = convertValueToSchemaType(value, schema); // reuse existing logic
+        if (value == null) return schemaTypeConverter.getDefaultValue(schema);
+        Object out = convertValueToSchemaType(value, schema); // base logic
 
         try {
             String logical = schema.getProp("logicalType");
-            boolean isDateLogical = logical != null && "DATE".equalsIgnoreCase(logical);
-            boolean isDateFieldName = fieldName != null && fieldName.toUpperCase().startsWith("DT_");
+            Type schemaType = schema.getType();
 
-            // Force DECIMAL formatting as string (e.g., "0.00") when logicalType=DECIMAL or specific field name
+            // DECIMAL: if schema type is STRING, format as "0.00"; if numeric, return numeric respecting scale (scale=0 -> integer)
             boolean isDecimalLogical = logical != null && "DECIMAL".equalsIgnoreCase(logical);
             boolean isDecimalFieldName = "VL_ALCA_PROP".equalsIgnoreCase(fieldName); // explicit per feedback
-            if ((isDecimalLogical || isDecimalFieldName)) {
-                int scale = 2;
+            if (isDecimalLogical || isDecimalFieldName) {
+                int scale = 0;
                 try {
                     String prop = schema.getProp("scale");
                     if (prop != null && !prop.isEmpty()) scale = Integer.parseInt(prop);
                 } catch (NumberFormatException ignore) {}
+
                 String rawStr = (value == null) ? null : value.toString();
-                String formatted = formatDecimalString(rawStr, scale);
-                System.out.println(">>> [KcopHandler] DECIMAL format applied field=" + fieldName
-                        + " logicalType=" + logical
-                        + " scale=" + scale
-                        + " in=" + rawStr
-                        + " out=" + formatted);
-                return formatted;
+
+                if (schemaType == Type.STRING) {
+                    String formatted = formatDecimalString(rawStr, Math.max(0, scale));
+                    System.out.println(">>> [KcopHandler] DECIMAL(format STRING) field=" + fieldName
+                            + " scale=" + scale + " in=" + rawStr + " out=" + formatted);
+                    return formatted;
+                } else {
+                    // Numeric schema: parse and return numeric (no string) to avoid Avro type mismatch
+                    try {
+                        String norm = rawStr == null ? "0" : rawStr.trim().replace(',', '.');
+                        BigDecimal bd = new BigDecimal(norm);
+                        bd = bd.setScale(Math.max(0, scale), RoundingMode.HALF_UP);
+                        switch (schemaType) {
+                            case LONG:   return bd.longValue();
+                            case INT:    return bd.intValue();
+                            case DOUBLE: return bd.doubleValue();
+                            case FLOAT:  return bd.floatValue();
+                            default:     return out; // fallback to base
+                        }
+                    } catch (Exception e) {
+                        // fallback: base conversion already handled numerics; return default if needed
+                        return out instanceof Number ? out : schemaTypeConverter.getDefaultValue(schema);
+                    }
+                }
             }
 
+            // DATE trimming (yyyy-MM-dd) — unchanged
+            boolean isDateLogical = logical != null && "DATE".equalsIgnoreCase(logical);
+            boolean isDateFieldName = fieldName != null && fieldName.toUpperCase().startsWith("DT_");
             if ((isDateLogical || isDateFieldName) && out instanceof CharSequence) {
                 String s = out.toString().replace('/', '-');
                 int cutIdx = -1;
                 int spaceIdx = s.indexOf(' ');
                 int tIdx = s.indexOf('T');
-                if (spaceIdx > 0) cutIdx = spaceIdx;
-                else if (tIdx > 0) cutIdx = tIdx;
+                if (spaceIdx > 0) cutIdx = spaceIdx; else if (tIdx > 0) cutIdx = tIdx;
                 String dateOnly = cutIdx > 0 ? s.substring(0, cutIdx) : s;
                 if (dateOnly.matches("\\d{8}")) {
                     return dateOnly.substring(0, 4) + "-" + dateOnly.substring(4, 6) + "-" + dateOnly.substring(6, 8);
@@ -453,7 +470,7 @@ public class KcopHandler extends AbstractHandler {
                 return dateOnly.length() >= 10 ? dateOnly.substring(0, 10) : dateOnly;
             }
         } catch (Exception ignore) {
-            // fall back to original
+            // keep base output
         }
         return out;
     }
