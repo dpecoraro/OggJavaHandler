@@ -233,8 +233,8 @@ public class KcopHandler extends AbstractHandler {
 
             // Register schemas once per topic (value and key) — RECORD key
             if (lastRegisteredTopic == null || !lastRegisteredTopic.equals(topic)) {
-                String valueSubject = topic + "-value";
-                String keySubject = topic + "-key";
+                String valueSubject = topic + "_v2-value";
+                String keySubject = topic + "_v2-key";
 
                 System.out.println(">>> [KcopHandler] Registering value schema:"
                         + " subject=" + valueSubject
@@ -410,7 +410,9 @@ public class KcopHandler extends AbstractHandler {
 
     // Overload: enforce yyyy-MM-dd for DATE and handle DECIMAL according to schema type (STRING vs numeric)
     protected Object convertValueToSchemaType(Object value, Schema schema, String fieldName) {
-        if (value == null) return schemaTypeConverter.getDefaultValue(schema);
+        if (value == null) {
+            return schemaTypeConverter.getDefaultValue(schema);
+        }
         Object out = convertValueToSchemaType(value, schema); // base logic
 
         try {
@@ -424,15 +426,21 @@ public class KcopHandler extends AbstractHandler {
                 int scale = 0;
                 try {
                     String prop = schema.getProp("scale");
-                    if (prop != null && !prop.isEmpty()) scale = Integer.parseInt(prop);
-                } catch (NumberFormatException ignore) {}
+                    if (prop != null && !prop.isEmpty()) {
+                        scale = Integer.parseInt(prop);
+                    }
+                } catch (NumberFormatException ignore) {
+                }
 
                 String rawStr = (value == null) ? null : value.toString();
 
                 if (schemaType == Type.STRING) {
-                    String formatted = formatDecimalString(rawStr, Math.max(0, scale));
+                    int outScale = Math.max(2, scale); // garante 2 casas mesmo se scale=0
+                    String formatted = formatDecimalString(rawStr, outScale);
+
                     System.out.println(">>> [KcopHandler] DECIMAL(format STRING) field=" + fieldName
-                            + " scale=" + scale + " in=" + rawStr + " out=" + formatted);
+                            + " scale=" + scale + " outScale=" + outScale + " in=" + rawStr + " out=" + formatted);
+
                     return formatted;
                 } else {
                     // Numeric schema: parse and return numeric (no string) to avoid Avro type mismatch
@@ -441,11 +449,16 @@ public class KcopHandler extends AbstractHandler {
                         BigDecimal bd = new BigDecimal(norm);
                         bd = bd.setScale(Math.max(0, scale), RoundingMode.HALF_UP);
                         switch (schemaType) {
-                            case LONG:   return bd.longValue();
-                            case INT:    return bd.intValue();
-                            case DOUBLE: return bd.doubleValue();
-                            case FLOAT:  return bd.floatValue();
-                            default:     return out; // fallback to base
+                            case LONG:
+                                return bd.longValue();
+                            case INT:
+                                return bd.intValue();
+                            case DOUBLE:
+                                return bd.doubleValue();
+                            case FLOAT:
+                                return bd.floatValue();
+                            default:
+                                return out; // fallback to base
                         }
                     } catch (Exception e) {
                         // fallback: base conversion already handled numerics; return default if needed
@@ -462,7 +475,11 @@ public class KcopHandler extends AbstractHandler {
                 int cutIdx = -1;
                 int spaceIdx = s.indexOf(' ');
                 int tIdx = s.indexOf('T');
-                if (spaceIdx > 0) cutIdx = spaceIdx; else if (tIdx > 0) cutIdx = tIdx;
+                if (spaceIdx > 0) {
+                    cutIdx = spaceIdx;
+                } else if (tIdx > 0) {
+                    cutIdx = tIdx;
+                }
                 String dateOnly = cutIdx > 0 ? s.substring(0, cutIdx) : s;
                 if (dateOnly.matches("\\d{8}")) {
                     return dateOnly.substring(0, 4) + "-" + dateOnly.substring(4, 6) + "-" + dateOnly.substring(6, 8);
@@ -516,8 +533,11 @@ public class KcopHandler extends AbstractHandler {
                         int scale = 2;
                         try {
                             String prop = schema.getProp("scale");
-                            if (prop != null && !prop.isEmpty()) scale = Integer.parseInt(prop);
-                        } catch (NumberFormatException ignore) {}
+                            if (prop != null && !prop.isEmpty()) {
+                                scale = Integer.parseInt(prop);
+                            }
+                        } catch (NumberFormatException ignore) {
+                        }
                         return formatDecimalString(s, scale);
                     }
 
@@ -599,7 +619,9 @@ public class KcopHandler extends AbstractHandler {
     // Helper: format decimal string with fixed scale (no scientific notation)
     private String formatDecimalString(String raw, int scale) {
         try {
-            if (raw == null || raw.trim().isEmpty()) return zeroOfScale(scale);
+            if (raw == null || raw.trim().isEmpty()) {
+                return zeroOfScale(scale);
+            }
             String norm = raw.trim().replace(',', '.');
             BigDecimal bd = new BigDecimal(norm);
             bd = bd.setScale(scale, RoundingMode.HALF_UP);
@@ -617,9 +639,13 @@ public class KcopHandler extends AbstractHandler {
     }
 
     private String zeroOfScale(int scale) {
-        if (scale <= 0) return "0";
+        if (scale <= 0) {
+            return "0";
+        }
         StringBuilder sb = new StringBuilder("0.");
-        for (int i = 0; i < scale; i++) sb.append('0');
+        for (int i = 0; i < scale; i++) {
+            sb.append('0');
+        }
         return sb.toString();
     }
 
