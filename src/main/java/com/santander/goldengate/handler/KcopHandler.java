@@ -11,8 +11,10 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -60,6 +62,7 @@ public class KcopHandler extends AbstractHandler {
     private SchemaRegistryClient schemaRegistryClient;
 
     private String lastRegisteredTopic = null;   // avoid repeated registry in hot loops
+    private Map<String, String[]> keyColumnsOverrides = new HashMap<>(); // tableShortName -> key columns override
 
     public KcopHandler() {
         System.out.println(">>> [KcopHandler] Constructor called");
@@ -113,6 +116,22 @@ public class KcopHandler extends AbstractHandler {
             // Use Avro serializers for both key and value
             kafkaProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "io.confluent.kafka.serializers.KafkaAvroSerializer");
             kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "io.confluent.kafka.serializers.KafkaAvroSerializer");
+
+            // Parse key columns overrides: gg.handler.kafkahandler.keyColumns.<TABLE>=COL1,COL2,...
+            for (String propName : kafkaProps.stringPropertyNames()) {
+                if (propName.startsWith("gg.handler.kafkahandler.keyColumns.")) {
+                    String tableCode = propName.substring(propName.lastIndexOf('.') + 1).toUpperCase();
+                    String raw = kafkaProps.getProperty(propName, "");
+                    String[] cols = Arrays.stream(raw.split(","))
+                            .map(String::trim)
+                            .filter(s -> !s.isEmpty())
+                            .toArray(String[]::new);
+                    if (cols.length > 0) {
+                        keyColumnsOverrides.put(tableCode, cols);
+                        System.out.println(">>> [KcopHandler] Key columns override loaded for " + tableCode + ": " + Arrays.toString(cols));
+                    }
+                }
+            }
 
             kafkaProducer = new KafkaProducer<>(kafkaProps);
             System.out.println(">>> [KcopHandler] Kafka Producer initialized");
@@ -282,55 +301,93 @@ public class KcopHandler extends AbstractHandler {
         }
     }
 
-    // Build RECORD key schema based on PK columns
+    // Build RECORD key schema based on PK columns (or overrides)
     private Schema buildRecordKeySchema(String table, TableMetaData tableMetaData) {
         String shortName = table != null && table.contains(".")
                 ? table.substring(table.lastIndexOf('.') + 1)
                 : table;
+        String shortNameUpper = shortName != null ? shortName.toUpperCase() : "TABLE";
 
         SchemaBuilder.FieldAssembler<Schema> fields = SchemaBuilder
-                .record(shortName)
+                .record(shortNameUpper) // uppercase name as requested
                 .namespace("key.SOURCEDB.BALP")
                 .fields();
 
-        if (tableMetaData != null) {
-            for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
-                ColumnMetaData col = tableMetaData.getColumnMetaData(i);
-                if (col == null || !col.isKeyCol()) {
-                    continue;
-                }
-
-                String colName = col.getColumnName();
-                // Infer a simple type for key fields (DECIMAL -> long when scale=0; else string)
+        String[] overrideCols = keyColumnsOverrides.get(shortNameUpper);
+        if (overrideCols != null && overrideCols.length > 0) {
+            System.out.println(">>> [KcopHandler] Using key columns override for " + shortNameUpper + ": " + Arrays.toString(overrideCols));
+            for (String colName : overrideCols) {
+                ColumnMetaData col = findColumnByName(tableMetaData, colName);
                 Schema colSchema;
-                String typeName = col.getDataType() != null ? col.getDataType().toString().toUpperCase() : "";
-                boolean isDecimalLike = typeName.contains("NUMBER") || typeName.contains("DECIMAL") || typeName.contains("NUMERIC");
-                int numericScale = getNumericScale(col); // safely obtain scale via reflection or default
-                if (isDecimalLike && numericScale == 0) {
-                    colSchema = Schema.create(Type.LONG);
-                    colSchema.addProp("logicalType", "DECIMAL");
-                    colSchema.addProp("precision", getNumericPrecision(col));
-                    colSchema.addProp("scale", 0);
-                } else if (typeName.contains("DATE")) {
-                    colSchema = Schema.create(Type.STRING);
-                    colSchema.addProp("logicalType", "DATE");
-                    colSchema.addProp("length", 10);
-                } else if (typeName.contains("TIME") || typeName.contains("TIMESTAMP")) {
-                    colSchema = Schema.create(Type.STRING);
-                    colSchema.addProp("logicalType", "TIMESTAMP");
-                    colSchema.addProp("length", 32);
-                } else {
+                if (col != null) {
+                    // CHARACTER with length from metadata
                     colSchema = Schema.create(Type.STRING);
                     colSchema.addProp("logicalType", "CHARACTER");
-                    colSchema.addProp("length", Math.max(1, col.getBinaryLength()));
+                    colSchema.addProp("dbColumnName", col.getColumnName());
+                    colSchema.addProp("length", safeGetCharLength(col));
+                } else {
+                    // Fallback when column not found in metadata
+                    colSchema = Schema.create(Type.STRING);
+                    colSchema.addProp("logicalType", "CHARACTER");
+                    colSchema.addProp("dbColumnName", colName);
+                    colSchema.addProp("length", 255);
                 }
-                colSchema.addProp("dbColumnName", colName);
-
-                fields.name(colName).type(colSchema).withDefault(getDefaultForType(colSchema.getType()));
+                fields.name(colName).type(colSchema).withDefault("");
             }
+            return fields.endRecord();
         }
 
+        // Fallback to GG metadata key columns when no override provided
+        if (tableMetaData != null) {
+            LinkedHashMap<String, Schema> selected = new LinkedHashMap<>();
+            for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
+                ColumnMetaData col = tableMetaData.getColumnMetaData(i);
+                if (col == null || !col.isKeyCol()) continue;
+                String colName = col.getColumnName();
+                Schema colSchema = Schema.create(Type.STRING);
+                colSchema.addProp("logicalType", "CHARACTER");
+                colSchema.addProp("dbColumnName", colName);
+                colSchema.addProp("length", safeGetCharLength(col));
+                selected.put(colName, colSchema);
+            }
+            if (!selected.isEmpty()) {
+                System.out.println(">>> [KcopHandler] Using GG key columns for " + shortNameUpper + ": " + selected.keySet());
+                for (Map.Entry<String, Schema> e : selected.entrySet()) {
+                    fields.name(e.getKey()).type(e.getValue()).withDefault("");
+                }
+            }
+        }
         return fields.endRecord();
+    }
+
+    // Find a column by name (case-insensitive)
+    private ColumnMetaData findColumnByName(TableMetaData tmd, String name) {
+        if (tmd == null || name == null) return null;
+        String target = name.toUpperCase();
+        for (int i = 0; i < tmd.getNumColumns(); i++) {
+            ColumnMetaData col = tmd.getColumnMetaData(i);
+            if (col != null && target.equals(col.getColumnName().toUpperCase())) {
+                return col;
+            }
+        }
+        return null;
+    }
+
+    // Try to get character length from metadata
+    private int safeGetCharLength(ColumnMetaData col) {
+        if (col == null) return 255;
+        String[] candidates = new String[]{ "getBinaryLength", "getLength", "getDisplaySize" };
+        for (String mName : candidates) {
+            try {
+                Method m = col.getClass().getMethod(mName);
+                Object v = m.invoke(col);
+                if (v instanceof Number) {
+                    int len = ((Number) v).intValue();
+                    if (len > 0) return len;
+                }
+            } catch (Exception ignore) {}
+        }
+        return 255;
     }
 
     // Build GenericRecord key from afterImage/beforeImage map
