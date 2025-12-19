@@ -358,41 +358,71 @@ public class KcopHandler extends AbstractHandler {
                     ColumnMetaData col = findColumnByName(meta, f.name());
                     int realLen = safeGetCharLength(col);
 
-                    // read current length from object props
-                    Object prevObj = fs.getObjectProps().get("length");
-                    int prevLen = (prevObj instanceof Number) ? ((Number) prevObj).intValue() : -1;
+                    // read current length from objectProps or props
+                    int prevLen = -1;
+                    try {
+                        Object prevObj = fs.getObjectProps() != null ? fs.getObjectProps().get("length") : null;
+                        if (prevObj instanceof Number) prevLen = ((Number) prevObj).intValue();
+                        else {
+                            String prevStr = fs.getProp("length");
+                            if (prevStr != null && !prevStr.isEmpty()) prevLen = Integer.parseInt(prevStr);
+                        }
+                    } catch (Exception ignore) {}
 
                     if (realLen > 0 && realLen != prevLen) {
-                        // Avro forbids overwriting properties via addProp; update objectProps in-place
-                        setLengthPropUnsafe(fs, realLen);
-                        System.out.println(">>> [KcopHandler] CHARACTER length applied field=" + f.name()
-                                + " prev=" + prevLen + " new=" + realLen);
+                        boolean ok = setLengthPropUnsafe(fs, realLen);
+                        System.out.println(">>> [KcopHandler] CHARACTER length " + (ok ? "applied" : "attempted")
+                                + " field=" + f.name() + " prev=" + prevLen + " new=" + realLen);
                     }
                 }
             }
         }
     }
 
-    // Unsafe: update Schema.objectProps["length"] in-place to avoid "Can't overwrite property" error
+    // Unsafe: update Schema.objectProps["length"] and props["length"] (handle superclass JsonProperties)
     @SuppressWarnings("unchecked")
-    private void setLengthPropUnsafe(Schema schema, int len) {
+    private boolean setLengthPropUnsafe(Schema schema, int len) {
+        boolean updated = false;
         try {
-            java.lang.reflect.Field fObj = Schema.class.getDeclaredField("objectProps");
-            fObj.setAccessible(true);
-            Map<String, Object> objProps = (Map<String, Object>) fObj.get(schema);
-            if (objProps != null) {
-                objProps.put("length", len);
-            }
-            // ensure string props don't carry a conflicting "length"
-            java.lang.reflect.Field fStr = Schema.class.getDeclaredField("props");
-            fStr.setAccessible(true);
-            Map<String, String> strProps = (Map<String, String>) fStr.get(schema);
-            if (strProps != null) {
-                strProps.remove("length");
+            java.lang.reflect.Field fObj = findFieldRecursive(schema.getClass(), "objectProps");
+            if (fObj != null) {
+                fObj.setAccessible(true);
+                Map<String, Object> objProps = (Map<String, Object>) fObj.get(schema);
+                if (objProps != null) {
+                    objProps.put("length", len);
+                    updated = true;
+                }
             }
         } catch (Exception e) {
-            System.err.println("[KcopHandler] Failed to set length prop: " + e.getMessage());
+            System.err.println("[KcopHandler] Failed to set objectProps.length: " + e.getMessage());
         }
+        try {
+            java.lang.reflect.Field fStr = findFieldRecursive(schema.getClass(), "props");
+            if (fStr != null) {
+                fStr.setAccessible(true);
+                Map<String, String> strProps = (Map<String, String>) fStr.get(schema);
+                if (strProps != null) {
+                    strProps.put("length", String.valueOf(len));
+                    updated = true;
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("[KcopHandler] Failed to set props.length: " + e.getMessage());
+        }
+        return updated;
+    }
+
+    // Find a declared field by name in the class hierarchy
+    private java.lang.reflect.Field findFieldRecursive(Class<?> type, String name) {
+        Class<?> c = type;
+        while (c != null) {
+            try {
+                return c.getDeclaredField(name);
+            } catch (NoSuchFieldException ignore) {
+                c = c.getSuperclass();
+            }
+        }
+        return null;
     }
 
     // Build RECORD key schema based on PK columns (or overrides or defaults)
