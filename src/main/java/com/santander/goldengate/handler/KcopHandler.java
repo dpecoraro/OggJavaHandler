@@ -216,6 +216,13 @@ public class KcopHandler extends AbstractHandler {
 
         try {
             Schema avroSchema = schemaManager.getOrCreateAvroSchema(table, tableMetaData);
+
+            // Apply CHARACTER lengths from metadata to the inner table schema
+            Schema tableSchema = extractTableRecordSchema(avroSchema); // added
+            if (tableSchema != null && tableMetaData != null) {
+                applyCharLengthsToTableSchema(tableSchema, tableMetaData); // added
+            }
+
             GenericRecord cdcRecord = new GenericData.Record(avroSchema);
 
             if (!beforeImage.isEmpty()) {
@@ -310,6 +317,55 @@ public class KcopHandler extends AbstractHandler {
         }
     }
 
+    // Extract inner table record schema from the envelope (tries beforeImage, then afterImage)
+    private Schema extractTableRecordSchema(Schema envelopeSchema) {
+        if (envelopeSchema == null) return null;
+        Schema.Field before = envelopeSchema.getField("beforeImage");
+        if (before != null) {
+            Schema s = before.schema();
+            if (s.getType() == Type.UNION) {
+                for (Schema t : s.getTypes()) {
+                    if (t.getType() == Type.RECORD) return t;
+                }
+            } else if (s.getType() == Type.RECORD) {
+                return s;
+            }
+        }
+        Schema.Field after = envelopeSchema.getField("afterImage");
+        if (after != null) {
+            Schema s = after.schema();
+            if (s.getType() == Type.UNION) {
+                for (Schema t : s.getTypes()) {
+                    if (t.getType() == Type.RECORD) return t;
+                }
+            } else if (s.getType() == Type.RECORD) {
+                return s;
+            }
+        }
+        return null;
+    }
+
+    // Update CHARACTER field "length" prop using TableMetaData
+    private void applyCharLengthsToTableSchema(Schema tableSchema, TableMetaData meta) {
+        for (Schema.Field f : tableSchema.getFields()) {
+            Schema fs = f.schema();
+            if (fs.getType() == Type.STRING) {
+                String logical = fs.getProp("logicalType");
+                if (logical != null && "CHARACTER".equalsIgnoreCase(logical)) {
+                    ColumnMetaData col = findColumnByName(meta, f.name());
+                    int realLen = safeGetCharLength(col);
+                    String prev = fs.getProp("length");
+                    String prevShown = prev != null ? prev : "null";
+                    if (realLen > 0) {
+                        fs.addProp("length", realLen);
+                        System.out.println(">>> [KcopHandler] CHARACTER length applied field=" + f.name()
+                                + " prev=" + prevShown + " new=" + realLen);
+                    }
+                }
+            }
+        }
+    }
+
     // Build RECORD key schema based on PK columns (or overrides or defaults)
     private Schema buildRecordKeySchema(String table, TableMetaData tableMetaData) {
         String shortName = table != null && table.contains(".")
@@ -359,7 +415,9 @@ public class KcopHandler extends AbstractHandler {
             LinkedHashMap<String, Schema> selected = new LinkedHashMap<>();
             for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
                 ColumnMetaData col = tableMetaData.getColumnMetaData(i);
-                if (col == null || !col.isKeyCol()) continue;
+                if (col == null || !col.isKeyCol()) {
+                    continue;
+                }
                 String colName = col.getColumnName();
                 Schema colSchema = Schema.create(Type.STRING);
                 colSchema.addProp("logicalType", "CHARACTER");
@@ -379,7 +437,9 @@ public class KcopHandler extends AbstractHandler {
 
     // Find a column by name (case-insensitive)
     private ColumnMetaData findColumnByName(TableMetaData tmd, String name) {
-        if (tmd == null || name == null) return null;
+        if (tmd == null || name == null) {
+            return null;
+        }
         String target = name.toUpperCase();
         for (int i = 0; i < tmd.getNumColumns(); i++) {
             ColumnMetaData col = tmd.getColumnMetaData(i);
@@ -392,17 +452,22 @@ public class KcopHandler extends AbstractHandler {
 
     // Try to get character length from metadata
     private int safeGetCharLength(ColumnMetaData col) {
-        if (col == null) return 255;
-        String[] candidates = new String[]{ "getBinaryLength", "getLength", "getDisplaySize" };
+        if (col == null) {
+            return 255;
+        }
+        String[] candidates = new String[]{"getBinaryLength", "getLength", "getDisplaySize"};
         for (String mName : candidates) {
             try {
                 Method m = col.getClass().getMethod(mName);
                 Object v = m.invoke(col);
                 if (v instanceof Number) {
                     int len = ((Number) v).intValue();
-                    if (len > 0) return len;
+                    if (len > 0) {
+                        return len;
+                    }
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) {
+            }
         }
         return 255;
     }
@@ -489,10 +554,6 @@ public class KcopHandler extends AbstractHandler {
                 if (schemaType == Type.STRING) {
                     int outScale = Math.max(2, scale); // garante 2 casas mesmo se scale=0
                     String formatted = formatDecimalString(rawStr, outScale);
-
-                    System.out.println(">>> [KcopHandler] DECIMAL(format STRING) field=" + fieldName
-                            + " scale=" + scale + " outScale=" + outScale + " in=" + rawStr + " out=" + formatted);
-
                     return formatted;
                 } else {
                     // Numeric schema: parse and return numeric (no string) to avoid Avro type mismatch
