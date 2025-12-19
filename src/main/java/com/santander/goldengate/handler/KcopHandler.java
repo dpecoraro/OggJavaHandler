@@ -31,6 +31,8 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.IntNode;
 import com.santander.goldengate.helpers.EntityTypeFormatHandler;
 import com.santander.goldengate.helpers.SchemaTypeConverter;
 
@@ -62,19 +64,19 @@ public class KcopHandler extends AbstractHandler {
     private SchemaRegistryClient schemaRegistryClient;
 
     private String lastRegisteredTopic = null;   // avoid repeated registry in hot loops
-    private Map<String, String[]> keyColumnsOverrides = new HashMap<>(); // tableShortName -> key columns override
-    // Default key specs: table -> ordered map of column -> length (used when no override present)
-    private Map<String, LinkedHashMap<String, Integer>> defaultKeyColumnSpecs = new HashMap<>(); // added
+    private Map<String, String[]> keyColumnsOverrides = new HashMap<>();
+    private Map<String, LinkedHashMap<String, Integer>> defaultKeyColumnSpecs = new HashMap<>();
+    // Control record name case for key schema (lower|upper|preserve), default lower to match SR subjects like aedt098
+    private String keySchemaRecordNameCase = "lower";
 
     public KcopHandler() {
         System.out.println(">>> [KcopHandler] Constructor called");
-        // Default spec for AEDT074: 4 columns with fixed lengths
         LinkedHashMap<String, Integer> aedt074 = new LinkedHashMap<>();
         aedt074.put("CD_BANC", 4);
         aedt074.put("CD_CENT_CPTU", 4);
         aedt074.put("AN_PROP", 4);
         aedt074.put("NR_SOLI", 8);
-        defaultKeyColumnSpecs.put("AEDT074", aedt074); // added
+        defaultKeyColumnSpecs.put("AEDT074", aedt074);
     }
 
     public void setKafkaProducerConfigFile(String kafkaProducerConfigFile) {
@@ -141,6 +143,9 @@ public class KcopHandler extends AbstractHandler {
                     }
                 }
             }
+
+            // Read optional key record name case policy
+            keySchemaRecordNameCase = kafkaProps.getProperty("gg.handler.kafkahandler.keySchemaRecordNameCase", "lower");
 
             kafkaProducer = new KafkaProducer<>(kafkaProps);
             System.out.println(">>> [KcopHandler] Kafka Producer initialized");
@@ -219,9 +224,9 @@ public class KcopHandler extends AbstractHandler {
 
             // Apply CHARACTER lengths from metadata to the inner table schema
 
-            Schema tableSchema = extractTableRecordSchema(avroSchema); // added
+            Schema tableSchema = extractTableRecordSchema(avroSchema);
             if (tableSchema != null && tableMetaData != null) {
-                applyCharLengthsToTableSchema(tableSchema, tableMetaData); // added
+                applyCharLengthsToTableSchema(tableSchema, tableMetaData);
             }
 
             GenericRecord cdcRecord = new GenericData.Record(avroSchema);
@@ -358,7 +363,6 @@ public class KcopHandler extends AbstractHandler {
                     ColumnMetaData col = findColumnByName(meta, f.name());
                     int realLen = safeGetCharLength(col);
 
-                    // read current length from objectProps or props
                     int prevLen = -1;
                     try {
                         Object prevObj = fs.getObjectProps() != null ? fs.getObjectProps().get("length") : null;
@@ -384,25 +388,23 @@ public class KcopHandler extends AbstractHandler {
     private boolean setLengthPropUnsafe(Schema schema, int len) {
         boolean updated = false;
         try {
-            java.lang.reflect.Field fObj = findFieldRecursive(schema.getClass(), "objectProps");
-            if (fObj != null) {
-                fObj.setAccessible(true);
-                Map<String, Object> objProps = (Map<String, Object>) fObj.get(schema);
-                if (objProps != null) {
-                    objProps.put("length", len);
-                    updated = true;
-                }
+            // Use public accessor for objectProps
+            Map<String, Object> objProps = schema.getObjectProps();
+            if (objProps != null) {
+                objProps.put("length", len);
+                updated = true;
             }
         } catch (Exception e) {
             System.err.println("[KcopHandler] Failed to set objectProps.length: " + e.getMessage());
         }
         try {
+            // Update internal props (JsonNode map) via recursive field lookup
             java.lang.reflect.Field fStr = findFieldRecursive(schema.getClass(), "props");
             if (fStr != null) {
                 fStr.setAccessible(true);
-                Map<String, String> strProps = (Map<String, String>) fStr.get(schema);
+                Map<String, JsonNode> strProps = (Map<String, JsonNode>) fStr.get(schema);
                 if (strProps != null) {
-                    strProps.put("length", String.valueOf(len));
+                    strProps.put("length", IntNode.valueOf(len));
                     updated = true;
                 }
             }
@@ -430,17 +432,16 @@ public class KcopHandler extends AbstractHandler {
         String shortName = table != null && table.contains(".")
                 ? table.substring(table.lastIndexOf('.') + 1)
                 : table;
-        String shortNameUpper = shortName != null ? shortName.toUpperCase() : "TABLE";
-
+        String recordName = applyCasePolicy(shortName); // lower by default
         SchemaBuilder.FieldAssembler<Schema> fields = SchemaBuilder
-                .record(shortNameUpper) // uppercase name as requested
+                .record(recordName)
                 .namespace("key.SOURCEDB.BALP")
                 .fields();
 
         // 1) Property override takes precedence
-        String[] overrideCols = keyColumnsOverrides.get(shortNameUpper);
+        String[] overrideCols = keyColumnsOverrides.get(recordName.toUpperCase()); // match overrides loaded as upper keys
         if (overrideCols != null && overrideCols.length > 0) {
-            System.out.println(">>> [KcopHandler] Using key columns override for " + shortNameUpper + ": " + Arrays.toString(overrideCols));
+            System.out.println(">>> [KcopHandler] Using key columns override for " + recordName.toUpperCase() + ": " + Arrays.toString(overrideCols));
             for (String colName : overrideCols) {
                 ColumnMetaData col = findColumnByName(tableMetaData, colName);
                 Schema colSchema = Schema.create(Type.STRING);
@@ -452,10 +453,10 @@ public class KcopHandler extends AbstractHandler {
             return fields.endRecord();
         }
 
-        // 2) Default spec per table (e.g., AEDT074 -> CD_BANC, CD_CENT_CPTU, AN_PROP, NR_SOLI)
-        LinkedHashMap<String, Integer> defaults = defaultKeyColumnSpecs.get(shortNameUpper);
+        // 2) Default spec per table (fixed lengths)
+        LinkedHashMap<String, Integer> defaults = defaultKeyColumnSpecs.get(recordName.toUpperCase());
         if (defaults != null && !defaults.isEmpty()) {
-            System.out.println(">>> [KcopHandler] Using default key spec for " + shortNameUpper + ": " + defaults.keySet());
+            System.out.println(">>> [KcopHandler] Using default key spec for " + recordName.toUpperCase() + ": " + defaults.keySet());
             for (Map.Entry<String, Integer> e : defaults.entrySet()) {
                 String colName = e.getKey();
                 int len = e.getValue() != null ? e.getValue() : 255;
@@ -469,29 +470,60 @@ public class KcopHandler extends AbstractHandler {
             return fields.endRecord();
         }
 
-        // 3) Fallback to GG metadata isKeyCol()
+        // 3) Fallback to GG metadata isKeyCol() with type inference
         if (tableMetaData != null) {
             LinkedHashMap<String, Schema> selected = new LinkedHashMap<>();
             for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
                 ColumnMetaData col = tableMetaData.getColumnMetaData(i);
-                if (col == null || !col.isKeyCol()) {
-                    continue;
-                }
+                if (col == null || !col.isKeyCol()) continue;
+
                 String colName = col.getColumnName();
-                Schema colSchema = Schema.create(Type.STRING);
-                colSchema.addProp("logicalType", "CHARACTER");
-                colSchema.addProp("dbColumnName", colName);
-                colSchema.addProp("length", safeGetCharLength(col));
+                String typeName = col.getDataType() != null ? col.getDataType().toString().toUpperCase() : "";
+                boolean isDecimalLike = typeName.contains("NUMBER") || typeName.contains("DECIMAL") || typeName.contains("NUMERIC");
+                int scale = getNumericScale(col);
+
+                Schema colSchema;
+                if (typeName.contains("DATE")) {
+                    colSchema = Schema.create(Type.STRING);
+                    colSchema.addProp("logicalType", "DATE");
+                    colSchema.addProp("dbColumnName", colName);
+                    colSchema.addProp("length", 10);
+                } else if (typeName.contains("TIMESTAMP") || typeName.contains("TIME")) {
+                    colSchema = Schema.create(Type.STRING);
+                    colSchema.addProp("logicalType", "TIMESTAMP");
+                    colSchema.addProp("dbColumnName", colName);
+                    colSchema.addProp("length", 32);
+                } else if (isDecimalLike && scale == 0) {
+                    colSchema = Schema.create(Type.LONG);
+                    colSchema.addProp("logicalType", "DECIMAL");
+                    colSchema.addProp("precision", getNumericPrecision(col));
+                    colSchema.addProp("scale", 0);
+                    colSchema.addProp("dbColumnName", colName);
+                } else {
+                    colSchema = Schema.create(Type.STRING);
+                    colSchema.addProp("logicalType", "CHARACTER");
+                    colSchema.addProp("dbColumnName", colName);
+                    colSchema.addProp("length", safeGetCharLength(col));
+                }
                 selected.put(colName, colSchema);
             }
             if (!selected.isEmpty()) {
-                System.out.println(">>> [KcopHandler] Using GG key columns for " + shortNameUpper + ": " + selected.keySet());
+                System.out.println(">>> [KcopHandler] Using GG key columns for " + recordName.toUpperCase() + ": " + selected.keySet());
                 for (Map.Entry<String, Schema> e : selected.entrySet()) {
-                    fields.name(e.getKey()).type(e.getValue()).withDefault("");
+                    fields.name(e.getKey()).type(e.getValue()).withDefault(schemaTypeConverter.getDefaultValue(e.getValue()));
                 }
             }
         }
         return fields.endRecord();
+    }
+
+    private String applyCasePolicy(String name) {
+        if (name == null) return "table";
+        switch (keySchemaRecordNameCase == null ? "lower" : keySchemaRecordNameCase.toLowerCase()) {
+            case "upper": return name.toUpperCase();
+            case "preserve": return name;
+            default: return name.toLowerCase();
+        }
     }
 
     // Find a column by name (case-insensitive)
