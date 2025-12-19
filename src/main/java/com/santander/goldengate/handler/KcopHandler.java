@@ -218,6 +218,7 @@ public class KcopHandler extends AbstractHandler {
             Schema avroSchema = schemaManager.getOrCreateAvroSchema(table, tableMetaData);
 
             // Apply CHARACTER lengths from metadata to the inner table schema
+
             Schema tableSchema = extractTableRecordSchema(avroSchema); // added
             if (tableSchema != null && tableMetaData != null) {
                 applyCharLengthsToTableSchema(tableSchema, tableMetaData); // added
@@ -320,6 +321,7 @@ public class KcopHandler extends AbstractHandler {
     // Extract inner table record schema from the envelope (tries beforeImage, then afterImage)
     private Schema extractTableRecordSchema(Schema envelopeSchema) {
         if (envelopeSchema == null) return null;
+        System.out.println(">>> [KcopHandler] Extracting table record schema from envelope: " + envelopeSchema.getFullName());
         Schema.Field before = envelopeSchema.getField("beforeImage");
         if (before != null) {
             Schema s = before.schema();
@@ -347,6 +349,7 @@ public class KcopHandler extends AbstractHandler {
 
     // Update CHARACTER field "length" prop using TableMetaData
     private void applyCharLengthsToTableSchema(Schema tableSchema, TableMetaData meta) {
+        System.out.println(">>> [KcopHandler] Applying CHARACTER lengths to table schema: " + tableSchema.getFullName());
         for (Schema.Field f : tableSchema.getFields()) {
             Schema fs = f.schema();
             if (fs.getType() == Type.STRING) {
@@ -354,15 +357,41 @@ public class KcopHandler extends AbstractHandler {
                 if (logical != null && "CHARACTER".equalsIgnoreCase(logical)) {
                     ColumnMetaData col = findColumnByName(meta, f.name());
                     int realLen = safeGetCharLength(col);
-                    String prev = fs.getProp("length");
-                    String prevShown = prev != null ? prev : "null";
-                    if (realLen > 0) {
-                        fs.addProp("length", realLen);
+
+                    // read current length from object props
+                    Object prevObj = fs.getObjectProps().get("length");
+                    int prevLen = (prevObj instanceof Number) ? ((Number) prevObj).intValue() : -1;
+
+                    if (realLen > 0 && realLen != prevLen) {
+                        // Avro forbids overwriting properties via addProp; update objectProps in-place
+                        setLengthPropUnsafe(fs, realLen);
                         System.out.println(">>> [KcopHandler] CHARACTER length applied field=" + f.name()
-                                + " prev=" + prevShown + " new=" + realLen);
+                                + " prev=" + prevLen + " new=" + realLen);
                     }
                 }
             }
+        }
+    }
+
+    // Unsafe: update Schema.objectProps["length"] in-place to avoid "Can't overwrite property" error
+    @SuppressWarnings("unchecked")
+    private void setLengthPropUnsafe(Schema schema, int len) {
+        try {
+            java.lang.reflect.Field fObj = Schema.class.getDeclaredField("objectProps");
+            fObj.setAccessible(true);
+            Map<String, Object> objProps = (Map<String, Object>) fObj.get(schema);
+            if (objProps != null) {
+                objProps.put("length", len);
+            }
+            // ensure string props don't carry a conflicting "length"
+            java.lang.reflect.Field fStr = Schema.class.getDeclaredField("props");
+            fStr.setAccessible(true);
+            Map<String, String> strProps = (Map<String, String>) fStr.get(schema);
+            if (strProps != null) {
+                strProps.remove("length");
+            }
+        } catch (Exception e) {
+            System.err.println("[KcopHandler] Failed to set length prop: " + e.getMessage());
         }
     }
 
