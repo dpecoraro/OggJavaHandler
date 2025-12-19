@@ -56,7 +56,7 @@ public class KcopHandler extends AbstractHandler {
     private DsMetaData metaData;
     private AvroSchemaManager schemaManager;
     private SchemaTypeConverter schemaTypeConverter;
-    private KafkaProducer<Object, GenericRecord> kafkaProducer; // key via Avro serializer to auto-register in SR
+    private KafkaProducer<String, GenericRecord> kafkaProducer; // key via Avro serializer to auto-register in SR
     private String topicMappingTemplate;
     private String kafkaBootstrapServers;
     private SchemaRegistryClient schemaRegistryClient;
@@ -123,7 +123,7 @@ public class KcopHandler extends AbstractHandler {
             }
 
             // Use Avro serializers for both key and value
-            kafkaProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "io.confluent.kafka.serializers.KafkaAvroSerializer");
+            kafkaProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
             kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "io.confluent.kafka.serializers.KafkaAvroSerializer");
 
             // Parse key columns overrides: gg.handler.kafkahandler.keyColumns.<TABLE>=COL1,COL2,...
@@ -249,7 +249,7 @@ public class KcopHandler extends AbstractHandler {
 
             // Build Avro key schema (RECORD) and key GenericRecord from PK columns
             Schema keySchema = buildRecordKeySchema(table, tableMetaData);
-            GenericRecord keyRecord = buildRecordKey(keySchema, tableMetaData, beforeImage, afterImage);
+            String keyRecord = buildKeyString(table, keySchema, cdcRecord);
 
             // Log control fields and key
             System.out.println(">>> [KcopHandler] Prepared message:"
@@ -289,8 +289,7 @@ public class KcopHandler extends AbstractHandler {
             System.out.println(">>> [KcopHandler] BeforeImage map: " + beforeImage);
             System.out.println(">>> [KcopHandler] AfterImage map: " + afterImage);
 
-            // Send with Avro-serialized key (GenericRecord) and Avro-serialized value
-            ProducerRecord<Object, GenericRecord> producerRecord = new ProducerRecord<>(topic, keyRecord, cdcRecord);
+            ProducerRecord<String, GenericRecord> producerRecord = new ProducerRecord<>(topic, keyRecord, cdcRecord);
             System.out.println(">>> [KcopHandler] Sending to Kafka: bootstrap=" + kafkaBootstrapServers
                     + " topic=" + topic
                     + " key.schema=" + keySchema.getFullName());
@@ -399,8 +398,7 @@ public class KcopHandler extends AbstractHandler {
                 // copia tudo MENOS length antigo
                 copySchemaPropsExcept(effective, s2, "length");
 
-                // deixa explícito: BYTE length
-                s2.addProp("length", String.valueOf(byteLen));
+                s2.addProp("length", String.valueOf(charLen));
 
                 newEffective = s2;
             }
@@ -735,21 +733,26 @@ public class KcopHandler extends AbstractHandler {
     }
 
     // Build GenericRecord key from afterImage/beforeImage map
-    private GenericRecord buildRecordKey(Schema keySchema,
-            TableMetaData tableMetaData,
-            Map<String, Object> beforeImage,
-            Map<String, Object> afterImage) {
-        GenericRecord keyRecord = new GenericData.Record(keySchema);
-        for (org.apache.avro.Schema.Field f : keySchema.getFields()) {
-            String name = f.name();
-            Object raw = afterImage.get(name);
-            if (raw == null) {
-                raw = beforeImage.get(name);
+    private String buildKeyString(String table, Schema keySchema, GenericRecord keyRecord) {
+        StringBuilder sb = new StringBuilder();
+        for (Schema.Field f : keySchema.getFields()) {
+            Object v = keyRecord.get(f.name());
+            String s = (v == null) ? "" : v.toString();
+
+            int len = 0;
+            try {
+                String l = f.schema().getProp("length");
+                if (l != null) {
+                    len = Integer.parseInt(l);
+                }
+            } catch (Exception ignore) {
             }
-            Object converted = convertValueToSchemaType(raw, f.schema(), name);
-            keyRecord.put(name, converted);
+            if (len > 0 && s.length() < len) {
+                sb.append("0".repeat(len - s.length()));
+            }
+            sb.append(s);
         }
-        return keyRecord;
+        return sb.toString();
     }
 
     // Create a table image record ("beforeImage" or "afterImage") using the envelope schema
