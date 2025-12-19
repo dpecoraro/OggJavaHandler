@@ -65,6 +65,8 @@ public class KcopHandler extends AbstractHandler {
     private Map<String, String[]> keyColumnsOverrides = new HashMap<>();
     private Map<String, LinkedHashMap<String, Integer>> defaultKeyColumnSpecs = new HashMap<>();
 
+    private final java.util.Set<String> loggedLenCols = java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+
     public KcopHandler() {
         System.out.println(">>> [KcopHandler] Constructor called");
         LinkedHashMap<String, Integer> aedt074 = new LinkedHashMap<>();
@@ -633,26 +635,49 @@ public class KcopHandler extends AbstractHandler {
         return null;
     }
 
-    // Try to get character length from metadata
     private int safeGetCharLength(ColumnMetaData col) {
         if (col == null) {
             return 255;
         }
 
-        // 1️⃣ métodos que retornam tamanho lógico da coluna (CHAR length)
-        String[] charLengthCandidates = new String[]{
-            "getLength",
-            "getCharLength",
-            "getColumnLength"
-        };
+        String colName = null;
+        try {
+            colName = col.getColumnName();
+        } catch (Exception ignore) {
+        }
+        String key = (colName == null ? "UNKNOWN" : colName);
 
-        for (String mName : charLengthCandidates) {
+        // loga 1x por coluna
+        if (loggedLenCols.add(key)) {
+            System.out.println(">>> [LEN-DEBUG] column=" + key
+                    + " class=" + col.getClass().getName()
+                    + " dataType=" + (col.getDataType() != null ? col.getDataType().toString() : "null"));
+
+            String[] probes = new String[]{
+                "getLength", "getCharLength", "getColumnLength", "getDataLength",
+                "getBinaryLength", "getDisplaySize", "getPrecision", "getScale"
+            };
+
+            for (String mName : probes) {
+                try {
+                    Method m = col.getClass().getMethod(mName);
+                    Object v = m.invoke(col);
+                    System.out.println(">>> [LEN-DEBUG] " + key + "." + mName + "=" + v);
+                } catch (Exception e) {
+                    System.out.println(">>> [LEN-DEBUG] " + key + "." + mName + " (n/a)");
+                }
+            }
+        }
+
+        // tentativa “boa” de char-length
+        String[] candidates = new String[]{"getCharLength", "getColumnLength", "getLength"};
+        for (String mName : candidates) {
             try {
                 Method m = col.getClass().getMethod(mName);
                 Object v = m.invoke(col);
                 if (v instanceof Number) {
                     int len = ((Number) v).intValue();
-                    if (len > 0 && len < 10000) {
+                    if (len > 0) {
                         return len;
                     }
                 }
@@ -660,18 +685,17 @@ public class KcopHandler extends AbstractHandler {
             }
         }
 
-        // 2️⃣ fallback: parse do datatype (CHAR(4), VARCHAR2(4 CHAR), etc.)
+        // fallback: parse do dataType (se vier algo tipo VARCHAR2(4 CHAR))
         try {
             String dt = col.getDataType() != null ? col.getDataType().toString() : null;
             if (dt != null) {
-                int l = dt.indexOf('(');
-                int r = dt.indexOf(')');
+                int l = dt.indexOf('('), r = dt.indexOf(')');
                 if (l > 0 && r > l) {
                     String inside = dt.substring(l + 1, r).trim();
                     if (inside.contains(",")) {
                         inside = inside.substring(0, inside.indexOf(','));
                     }
-                    int parsed = Integer.parseInt(inside.trim());
+                    int parsed = Integer.parseInt(inside.replaceAll("[^0-9]", ""));
                     if (parsed > 0) {
                         return parsed;
                     }
@@ -680,7 +704,6 @@ public class KcopHandler extends AbstractHandler {
         } catch (Exception ignore) {
         }
 
-        // 3️⃣ último recurso (nunca displaySize)
         return 255;
     }
 
