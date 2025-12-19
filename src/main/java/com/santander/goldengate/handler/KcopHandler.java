@@ -375,12 +375,20 @@ public class KcopHandler extends AbstractHandler {
                 ColumnMetaData col = findColumnByName(tmd, f.name());
 
                 int byteLen = 255;
+                int charLen = 255;
                 if (col != null) {
                     try {
                         Method m = col.getClass().getMethod("getColumnLength");
                         Object v = m.invoke(col);
                         if (v instanceof Number && ((Number) v).intValue() > 0) {
                             byteLen = ((Number) v).intValue();
+
+                            // 🔥 heurística UTF-8 (3 bytes por char)
+                            if (byteLen % 3 == 0) {
+                                charLen = byteLen / 3;
+                            } else {
+                                charLen = byteLen; // fallback defensivo
+                            }
                         }
                     } catch (Exception ignore) {
                     }
@@ -393,7 +401,6 @@ public class KcopHandler extends AbstractHandler {
 
                 // deixa explícito: BYTE length
                 s2.addProp("length", String.valueOf(byteLen));
-                s2.addProp("lengthSemantics", "BYTE");
 
                 newEffective = s2;
             }
@@ -835,7 +842,7 @@ public class KcopHandler extends AbstractHandler {
                 }
             }
 
-            // DATE trimming (yyyy-MM-dd) — unchanged
+            // DATE trimming (yyyy-MM-dd)
             boolean isDateLogical = logical != null && "DATE".equalsIgnoreCase(logical);
             boolean isDateFieldName = fieldName != null && fieldName.toUpperCase().startsWith("DT_");
             if ((isDateLogical || isDateFieldName) && out instanceof CharSequence) {
@@ -855,7 +862,6 @@ public class KcopHandler extends AbstractHandler {
                 return dateOnly.length() >= 10 ? dateOnly.substring(0, 10) : dateOnly;
             }
         } catch (Exception ignore) {
-            // keep base output
         }
         return out;
     }
@@ -1017,7 +1023,6 @@ public class KcopHandler extends AbstractHandler {
         return sb.toString();
     }
 
-    // Format millis to "yyyy-MM-dd HH:mm:ss.SSSSSSSSSSSS" (space separator, 12 fractional digits)
     private String formatMillisSpace12(long millis) {
         LocalDateTime ldt = LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault());
         String base = ldt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
@@ -1094,7 +1099,6 @@ public class KcopHandler extends AbstractHandler {
     // Resolve topic from template; fallback keeps previous behavior if template is missing
     protected String resolveTopic(String template, String fullyQualifiedTableName) {
         if (template == null || template.isEmpty()) {
-            // fallback to previous default if no template provided
             return "cdc." + fullyQualifiedTableName.toLowerCase().replace(".", "_");
         }
         return template.replace("${fullyQualifiedTableName}", fullyQualifiedTableName);
@@ -1185,7 +1189,6 @@ public class KcopHandler extends AbstractHandler {
 
     // Try to get operation/event timestamp in millis; fallback to System.currentTimeMillis()
     private long extractOperationTimestampMillis(DsEvent event, DsTransaction tx, DsOperation operation) {
-        // Try: event.getTimestamp()
         Long fromEvent = tryGetMillisViaReflection(event, "getTimestamp");
         if (fromEvent != null) {
             return fromEvent;
@@ -1250,17 +1253,14 @@ public class KcopHandler extends AbstractHandler {
         String[] methodCandidates = new String[]{
             "getUserName", "getUsername", "getUser", "getJobUser", "getOwner"
         };
-        // Try on tx first
         user = tryGetStringViaReflection(tx, methodCandidates);
         if (user != null && !user.isEmpty()) {
             return user;
         }
-        // Then on operation
         user = tryGetStringViaReflection(operation, methodCandidates);
         if (user != null && !user.isEmpty()) {
             return user;
         }
-        // Then on event
         user = tryGetStringViaReflection(event, methodCandidates);
         return (user != null && !user.isEmpty()) ? user : null;
     }
@@ -1281,7 +1281,6 @@ public class KcopHandler extends AbstractHandler {
                     }
                 }
             } catch (Exception ignore) {
-                // continue trying next method
             }
         }
         return null;
