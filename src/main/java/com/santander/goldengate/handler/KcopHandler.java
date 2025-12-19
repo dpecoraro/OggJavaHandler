@@ -31,8 +31,6 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.IntNode;
 import com.santander.goldengate.helpers.EntityTypeFormatHandler;
 import com.santander.goldengate.helpers.SchemaTypeConverter;
 
@@ -144,9 +142,6 @@ public class KcopHandler extends AbstractHandler {
                 }
             }
 
-            // Read optional key record name case policy
-            keySchemaRecordNameCase = kafkaProps.getProperty("gg.handler.kafkahandler.keySchemaRecordNameCase", "lower");
-
             kafkaProducer = new KafkaProducer<>(kafkaProps);
             System.out.println(">>> [KcopHandler] Kafka Producer initialized");
             System.out.println(">>> [KcopHandler] Kafka bootstrap.servers: " + kafkaBootstrapServers);
@@ -221,24 +216,19 @@ public class KcopHandler extends AbstractHandler {
 
         try {
             Schema avroSchema = schemaManager.getOrCreateAvroSchema(table, tableMetaData);
-
-            // Apply CHARACTER lengths from metadata to the inner table schema
-
-            Schema tableSchema = extractTableRecordSchema(avroSchema);
-            if (tableSchema != null && tableMetaData != null) {
-                applyCharLengthsToTableSchema(tableSchema, tableMetaData);
-            }
-
-            GenericRecord cdcRecord = new GenericData.Record(avroSchema);
-
+            Schema avroSchemaFixed = rebuildEnvelopeWithClonedTableSchema(avroSchema, tableMetaData);
+            System.out.println(">>> [KcopHandler] Using Avro schema: " + avroSchemaFixed.getFields());
+            
+            GenericRecord cdcRecord = new GenericData.Record(avroSchemaFixed);
+            System.out.println(">>> [KcopHandler] Created CDC GenericRecord " + cdcRecord.getSchema());
             if (!beforeImage.isEmpty()) {
-                GenericRecord beforeRec = createTableRecord(avroSchema, "beforeImage", beforeImage);
+                GenericRecord beforeRec = createTableRecord(avroSchemaFixed, "beforeImage", beforeImage);
                 cdcRecord.put("beforeImage", beforeRec);
             } else {
                 cdcRecord.put("beforeImage", null);
             }
             if (!afterImage.isEmpty()) {
-                GenericRecord afterRec = createTableRecord(avroSchema, "afterImage", afterImage);
+                GenericRecord afterRec = createTableRecord(avroSchemaFixed, "afterImage", afterImage);
                 cdcRecord.put("afterImage", afterRec);
             } else {
                 cdcRecord.put("afterImage", null);
@@ -325,14 +315,18 @@ public class KcopHandler extends AbstractHandler {
 
     // Extract inner table record schema from the envelope (tries beforeImage, then afterImage)
     private Schema extractTableRecordSchema(Schema envelopeSchema) {
-        if (envelopeSchema == null) return null;
+        if (envelopeSchema == null) {
+            return null;
+        }
         System.out.println(">>> [KcopHandler] Extracting table record schema from envelope: " + envelopeSchema.getFullName());
         Schema.Field before = envelopeSchema.getField("beforeImage");
         if (before != null) {
             Schema s = before.schema();
             if (s.getType() == Type.UNION) {
                 for (Schema t : s.getTypes()) {
-                    if (t.getType() == Type.RECORD) return t;
+                    if (t.getType() == Type.RECORD) {
+                        return t;
+                    }
                 }
             } else if (s.getType() == Type.RECORD) {
                 return s;
@@ -343,7 +337,9 @@ public class KcopHandler extends AbstractHandler {
             Schema s = after.schema();
             if (s.getType() == Type.UNION) {
                 for (Schema t : s.getTypes()) {
-                    if (t.getType() == Type.RECORD) return t;
+                    if (t.getType() == Type.RECORD) {
+                        return t;
+                    }
                 }
             } else if (s.getType() == Type.RECORD) {
                 return s;
@@ -352,79 +348,143 @@ public class KcopHandler extends AbstractHandler {
         return null;
     }
 
-    // Update CHARACTER field "length" prop using TableMetaData
-    private void applyCharLengthsToTableSchema(Schema tableSchema, TableMetaData meta) {
-        System.out.println(">>> [KcopHandler] Applying CHARACTER lengths to table schema: " + tableSchema.getFullName());
-        for (Schema.Field f : tableSchema.getFields()) {
+    private Schema cloneRecordWithCharLengths(Schema record, TableMetaData tmd) {
+        SchemaBuilder.FieldAssembler<Schema> fa = SchemaBuilder
+                .record(record.getName())
+                .namespace(record.getNamespace())
+                .fields();
+
+        for (Schema.Field f : record.getFields()) {
             Schema fs = f.schema();
-            if (fs.getType() == Type.STRING) {
-                String logical = fs.getProp("logicalType");
-                if (logical != null && "CHARACTER".equalsIgnoreCase(logical)) {
-                    ColumnMetaData col = findColumnByName(meta, f.name());
-                    int realLen = safeGetCharLength(col);
 
-                    int prevLen = -1;
-                    try {
-                        Object prevObj = fs.getObjectProps() != null ? fs.getObjectProps().get("length") : null;
-                        if (prevObj instanceof Number) prevLen = ((Number) prevObj).intValue();
-                        else {
-                            String prevStr = fs.getProp("length");
-                            if (prevStr != null && !prevStr.isEmpty()) prevLen = Integer.parseInt(prevStr);
-                        }
-                    } catch (Exception ignore) {}
+            // se for UNION (null + tipo), trate o “tipo real”
+            Schema effective = fs;
+            if (fs.getType() == Schema.Type.UNION) {
+                effective = fs.getTypes().stream()
+                        .filter(s -> s.getType() != Schema.Type.NULL)
+                        .findFirst().orElse(fs);
+            }
 
-                    if (realLen > 0 && realLen != prevLen) {
-                        boolean ok = setLengthPropUnsafe(fs, realLen);
-                        System.out.println(">>> [KcopHandler] CHARACTER length " + (ok ? "applied" : "attempted")
-                                + " field=" + f.name() + " prev=" + prevLen + " new=" + realLen);
-                    }
-                }
+            Schema newEffective = effective;
+
+            // Ajuste só para STRING com logicalType CHARACTER (se esse for o teu padrão)
+            String logical = effective.getProp("logicalType");
+            if (effective.getType() == Schema.Type.STRING && "CHARACTER".equalsIgnoreCase(logical)) {
+                ColumnMetaData col = findColumnByName(tmd, f.name()); // seu método existe :contentReference[oaicite:2]{index=2}
+                int len = (col != null) ? safeGetCharLength(col) : 255; // aqui você pode melhorar safeGetCharLength
+                // clona o schema do field (STRING) e injeta length
+                Schema s2 = Schema.create(Schema.Type.STRING);
+                // copia props existentes (logicalType, dbColumnName etc.)
+                copySchemaProps(effective, s2);
+                s2.addProp("length", len);
+                newEffective = s2;
+            }
+
+            Schema newFieldSchema = fs;
+            if (fs.getType() == Schema.Type.UNION) {
+                newFieldSchema = replaceNonNullInUnion(fs, newEffective);
+            } else {
+                newFieldSchema = newEffective;
+            }
+
+            Schema.Field nf = new Schema.Field(f.name(), newFieldSchema, f.doc(), f.defaultVal());
+            copyProps(f, nf);
+            fa = fa.name(nf.name()).type(nf.schema()).withDefault(nf.defaultVal());
+        }
+
+        Schema out = fa.endRecord();
+        copyRecordProps(record, out);
+        return out;
+    }
+
+    private void copySchemaProps(Schema from, Schema to) {
+        if (from == null || to == null) {
+            return;
+        }
+        for (Map.Entry<String, Object> e : from.getObjectProps().entrySet()) {
+            if (e.getValue() != null) {
+                to.addProp(e.getKey(), String.valueOf(e.getValue()));
             }
         }
     }
 
-    // Unsafe: update Schema.objectProps["length"] and props["length"] (handle superclass JsonProperties)
-    @SuppressWarnings("unchecked")
-    private boolean setLengthPropUnsafe(Schema schema, int len) {
-        boolean updated = false;
-        try {
-            // Use public accessor for objectProps
-            Map<String, Object> objProps = schema.getObjectProps();
-            if (objProps != null) {
-                objProps.put("length", len);
-                updated = true;
+    private void copyProps(Schema.Field from, Schema.Field to) {
+        for (Map.Entry<String, Object> e : from.getObjectProps().entrySet()) {
+            if (e.getValue() != null) {
+                to.addProp(e.getKey(), String.valueOf(e.getValue()));
             }
-        } catch (Exception e) {
-            System.err.println("[KcopHandler] Failed to set objectProps.length: " + e.getMessage());
         }
-        try {
-            // Update internal props (JsonNode map) via recursive field lookup
-            java.lang.reflect.Field fStr = findFieldRecursive(schema.getClass(), "props");
-            if (fStr != null) {
-                fStr.setAccessible(true);
-                Map<String, JsonNode> strProps = (Map<String, JsonNode>) fStr.get(schema);
-                if (strProps != null) {
-                    strProps.put("length", IntNode.valueOf(len));
-                    updated = true;
-                }
-            }
-        } catch (Exception e) {
-            System.err.println("[KcopHandler] Failed to set props.length: " + e.getMessage());
-        }
-        return updated;
     }
 
-    // Find a declared field by name in the class hierarchy
-    private java.lang.reflect.Field findFieldRecursive(Class<?> type, String name) {
-        Class<?> c = type;
-        while (c != null) {
-            try {
-                return c.getDeclaredField(name);
-            } catch (NoSuchFieldException ignore) {
-                c = c.getSuperclass();
+    private void copyRecordProps(Schema from, Schema to) {
+        copySchemaProps(from, to);
+    }
+
+    private Schema replaceNonNullInUnion(Schema union, Schema newNonNull) {
+        java.util.List<Schema> types = new java.util.ArrayList<>();
+        for (Schema s : union.getTypes()) {
+            if (s.getType() == Schema.Type.NULL) {
+                types.add(s);
+            } else {
+                types.add(newNonNull);
             }
         }
-        return null;
+        return Schema.createUnion(types);
+    }
+
+    private Schema rebuildEnvelopeWithClonedTableSchema(Schema envelope, TableMetaData tmd) {
+        if (envelope == null || tmd == null) {
+            return envelope;
+        }
+
+        // pega o schema RECORD usado em before/after (você já tem método parecido)
+        Schema tableRecord = extractTableRecordSchema(envelope); // seu método existe :contentReference[oaicite:1]{index=1}
+        if (tableRecord == null) {
+            return envelope;
+        }
+
+        Schema clonedTable = cloneRecordWithCharLengths(tableRecord, tmd);
+
+        // agora recria o envelope record trocando o tipo dos campos beforeImage/afterImage
+        SchemaBuilder.FieldAssembler<Schema> fa = SchemaBuilder
+                .record(envelope.getName())
+                .namespace(envelope.getNamespace())
+                .fields();
+
+        for (Schema.Field f : envelope.getFields()) {
+            if ("beforeImage".equals(f.name()) || "afterImage".equals(f.name())) {
+                // preserva union com null, mas substitui o record interno
+                Schema newFieldSchema = replaceRecordInsideUnion(f.schema(), clonedTable);
+                Schema.Field nf = new Schema.Field(f.name(), newFieldSchema, f.doc(), f.defaultVal());
+                copyProps(f, nf);
+                fa = fa.name(nf.name()).type(nf.schema()).withDefault(nf.defaultVal());
+            } else {
+                // campos de controle (A_ENTTYP etc.) mantém
+                Schema.Field nf = new Schema.Field(f.name(), f.schema(), f.doc(), f.defaultVal());
+                copyProps(f, nf);
+                fa = fa.name(nf.name()).type(nf.schema()).withDefault(nf.defaultVal());
+            }
+        }
+
+        Schema rebuilt = fa.endRecord();
+        copyRecordProps(envelope, rebuilt);
+        return rebuilt;
+    }
+
+    private Schema replaceRecordInsideUnion(Schema original, Schema newRecord) {
+        if (original.getType() != Schema.Type.UNION) {
+            return newRecord;
+        }
+        java.util.List<Schema> types = new java.util.ArrayList<>();
+        for (Schema s : original.getTypes()) {
+            if (s.getType() == Schema.Type.RECORD) {
+                types.add(newRecord);
+            } else {
+                types.add(s); // null, etc.
+
+            }
+        }
+        return Schema.createUnion(types);
     }
 
     // Build RECORD key schema based on PK columns (or overrides or defaults)
@@ -432,39 +492,59 @@ public class KcopHandler extends AbstractHandler {
         String shortName = table != null && table.contains(".")
                 ? table.substring(table.lastIndexOf('.') + 1)
                 : table;
-        String recordName = applyCasePolicy(shortName); // lower by default
+        String recordNameLower = shortName != null ? shortName.toLowerCase() : "table"; // force lower-case
+        String tableUpper = shortName != null ? shortName.toUpperCase() : "TABLE";
+
         SchemaBuilder.FieldAssembler<Schema> fields = SchemaBuilder
-                .record(recordName)
+                .record(recordNameLower) // lower-case to match SR subjects
                 .namespace("key.SOURCEDB.BALP")
                 .fields();
 
         // 1) Property override takes precedence
-        String[] overrideCols = keyColumnsOverrides.get(recordName.toUpperCase()); // match overrides loaded as upper keys
+        String[] overrideCols = keyColumnsOverrides.get(tableUpper);
         if (overrideCols != null && overrideCols.length > 0) {
-            System.out.println(">>> [KcopHandler] Using key columns override for " + recordName.toUpperCase() + ": " + Arrays.toString(overrideCols));
+            System.out.println(">>> [KcopHandler] Using key columns override for " + tableUpper + ": " + Arrays.toString(overrideCols));
             for (String colName : overrideCols) {
                 ColumnMetaData col = findColumnByName(tableMetaData, colName);
                 Schema colSchema = Schema.create(Type.STRING);
-                colSchema.addProp("logicalType", "CHARACTER");
+                // Heuristic: assign TIMESTAMP/DATE if name suggests
+                if (colName.toUpperCase().startsWith("DH_") || "DH_TRMT".equalsIgnoreCase(colName)) {
+                    colSchema.addProp("logicalType", "TIMESTAMP");
+                    colSchema.addProp("length", 32);
+                } else if (colName.toUpperCase().startsWith("DT_")) {
+                    colSchema.addProp("logicalType", "DATE");
+                    colSchema.addProp("length", 10);
+                } else {
+                    colSchema.addProp("logicalType", "CHARACTER");
+                    colSchema.addProp("length", col != null ? safeGetCharLength(col) : 255);
+                }
                 colSchema.addProp("dbColumnName", col != null ? col.getColumnName() : colName);
-                colSchema.addProp("length", col != null ? safeGetCharLength(col) : 255);
                 fields.name(colName).type(colSchema).withDefault("");
             }
             return fields.endRecord();
         }
 
         // 2) Default spec per table (fixed lengths)
-        LinkedHashMap<String, Integer> defaults = defaultKeyColumnSpecs.get(recordName.toUpperCase());
+        LinkedHashMap<String, Integer> defaults = defaultKeyColumnSpecs.get(tableUpper);
         if (defaults != null && !defaults.isEmpty()) {
-            System.out.println(">>> [KcopHandler] Using default key spec for " + recordName.toUpperCase() + ": " + defaults.keySet());
+            System.out.println(">>> [KcopHandler] Using default key spec for " + tableUpper + ": " + defaults.keySet());
             for (Map.Entry<String, Integer> e : defaults.entrySet()) {
                 String colName = e.getKey();
                 int len = e.getValue() != null ? e.getValue() : 255;
                 ColumnMetaData col = findColumnByName(tableMetaData, colName);
                 Schema colSchema = Schema.create(Type.STRING);
-                colSchema.addProp("logicalType", "CHARACTER");
+                // Heuristic: assign TIMESTAMP/DATE if name suggests
+                if (colName.toUpperCase().startsWith("DH_") || "DH_TRMT".equalsIgnoreCase(colName)) {
+                    colSchema.addProp("logicalType", "TIMESTAMP");
+                    colSchema.addProp("length", 32);
+                } else if (colName.toUpperCase().startsWith("DT_")) {
+                    colSchema.addProp("logicalType", "DATE");
+                    colSchema.addProp("length", 10);
+                } else {
+                    colSchema.addProp("logicalType", "CHARACTER");
+                    colSchema.addProp("length", len);
+                }
                 colSchema.addProp("dbColumnName", col != null ? col.getColumnName() : colName);
-                colSchema.addProp("length", len);
                 fields.name(colName).type(colSchema).withDefault("");
             }
             return fields.endRecord();
@@ -475,7 +555,9 @@ public class KcopHandler extends AbstractHandler {
             LinkedHashMap<String, Schema> selected = new LinkedHashMap<>();
             for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
                 ColumnMetaData col = tableMetaData.getColumnMetaData(i);
-                if (col == null || !col.isKeyCol()) continue;
+                if (col == null || !col.isKeyCol()) {
+                    continue;
+                }
 
                 String colName = col.getColumnName();
                 String typeName = col.getDataType() != null ? col.getDataType().toString().toUpperCase() : "";
@@ -483,32 +565,38 @@ public class KcopHandler extends AbstractHandler {
                 int scale = getNumericScale(col);
 
                 Schema colSchema;
-                if (typeName.contains("DATE")) {
+                // Prefer name-based heuristic first to match DH_/DT_ keys
+                if (colName.toUpperCase().startsWith("DH_") || "DH_TRMT".equalsIgnoreCase(colName)) {
+                    colSchema = Schema.create(Type.STRING);
+                    colSchema.addProp("logicalType", "TIMESTAMP");
+                    colSchema.addProp("length", 32);
+                } else if (colName.toUpperCase().startsWith("DT_")) {
                     colSchema = Schema.create(Type.STRING);
                     colSchema.addProp("logicalType", "DATE");
-                    colSchema.addProp("dbColumnName", colName);
                     colSchema.addProp("length", 10);
                 } else if (typeName.contains("TIMESTAMP") || typeName.contains("TIME")) {
                     colSchema = Schema.create(Type.STRING);
                     colSchema.addProp("logicalType", "TIMESTAMP");
-                    colSchema.addProp("dbColumnName", colName);
                     colSchema.addProp("length", 32);
+                } else if (typeName.contains("DATE")) {
+                    colSchema = Schema.create(Type.STRING);
+                    colSchema.addProp("logicalType", "DATE");
+                    colSchema.addProp("length", 10);
                 } else if (isDecimalLike && scale == 0) {
                     colSchema = Schema.create(Type.LONG);
                     colSchema.addProp("logicalType", "DECIMAL");
                     colSchema.addProp("precision", getNumericPrecision(col));
                     colSchema.addProp("scale", 0);
-                    colSchema.addProp("dbColumnName", colName);
                 } else {
                     colSchema = Schema.create(Type.STRING);
                     colSchema.addProp("logicalType", "CHARACTER");
-                    colSchema.addProp("dbColumnName", colName);
                     colSchema.addProp("length", safeGetCharLength(col));
                 }
+                colSchema.addProp("dbColumnName", colName);
                 selected.put(colName, colSchema);
             }
             if (!selected.isEmpty()) {
-                System.out.println(">>> [KcopHandler] Using GG key columns for " + recordName.toUpperCase() + ": " + selected.keySet());
+                System.out.println(">>> [KcopHandler] Using GG key columns for " + tableUpper + ": " + selected.keySet());
                 for (Map.Entry<String, Schema> e : selected.entrySet()) {
                     fields.name(e.getKey()).type(e.getValue()).withDefault(schemaTypeConverter.getDefaultValue(e.getValue()));
                 }
@@ -518,11 +606,16 @@ public class KcopHandler extends AbstractHandler {
     }
 
     private String applyCasePolicy(String name) {
-        if (name == null) return "table";
+        if (name == null) {
+            return "table";
+        }
         switch (keySchemaRecordNameCase == null ? "lower" : keySchemaRecordNameCase.toLowerCase()) {
-            case "upper": return name.toUpperCase();
-            case "preserve": return name;
-            default: return name.toLowerCase();
+            case "upper":
+                return name.toUpperCase();
+            case "preserve":
+                return name;
+            default:
+                return name.toLowerCase();
         }
     }
 
