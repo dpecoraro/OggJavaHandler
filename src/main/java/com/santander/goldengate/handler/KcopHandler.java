@@ -63,9 +63,18 @@ public class KcopHandler extends AbstractHandler {
 
     private String lastRegisteredTopic = null;   // avoid repeated registry in hot loops
     private Map<String, String[]> keyColumnsOverrides = new HashMap<>(); // tableShortName -> key columns override
+    // Default key specs: table -> ordered map of column -> length (used when no override present)
+    private Map<String, LinkedHashMap<String, Integer>> defaultKeyColumnSpecs = new HashMap<>(); // added
 
     public KcopHandler() {
         System.out.println(">>> [KcopHandler] Constructor called");
+        // Default spec for AEDT074: 4 columns with fixed lengths
+        LinkedHashMap<String, Integer> aedt074 = new LinkedHashMap<>();
+        aedt074.put("CD_BANC", 4);
+        aedt074.put("CD_CENT_CPTU", 4);
+        aedt074.put("AN_PROP", 4);
+        aedt074.put("NR_SOLI", 8);
+        defaultKeyColumnSpecs.put("AEDT074", aedt074); // added
     }
 
     public void setKafkaProducerConfigFile(String kafkaProducerConfigFile) {
@@ -301,7 +310,7 @@ public class KcopHandler extends AbstractHandler {
         }
     }
 
-    // Build RECORD key schema based on PK columns (or overrides)
+    // Build RECORD key schema based on PK columns (or overrides or defaults)
     private Schema buildRecordKeySchema(String table, TableMetaData tableMetaData) {
         String shortName = table != null && table.contains(".")
                 ? table.substring(table.lastIndexOf('.') + 1)
@@ -313,31 +322,39 @@ public class KcopHandler extends AbstractHandler {
                 .namespace("key.SOURCEDB.BALP")
                 .fields();
 
+        // 1) Property override takes precedence
         String[] overrideCols = keyColumnsOverrides.get(shortNameUpper);
         if (overrideCols != null && overrideCols.length > 0) {
             System.out.println(">>> [KcopHandler] Using key columns override for " + shortNameUpper + ": " + Arrays.toString(overrideCols));
             for (String colName : overrideCols) {
                 ColumnMetaData col = findColumnByName(tableMetaData, colName);
-                Schema colSchema;
-                if (col != null) {
-                    // CHARACTER with length from metadata
-                    colSchema = Schema.create(Type.STRING);
-                    colSchema.addProp("logicalType", "CHARACTER");
-                    colSchema.addProp("dbColumnName", col.getColumnName());
-                    colSchema.addProp("length", safeGetCharLength(col));
-                } else {
-                    // Fallback when column not found in metadata
-                    colSchema = Schema.create(Type.STRING);
-                    colSchema.addProp("logicalType", "CHARACTER");
-                    colSchema.addProp("dbColumnName", colName);
-                    colSchema.addProp("length", 255);
-                }
+                Schema colSchema = Schema.create(Type.STRING);
+                colSchema.addProp("logicalType", "CHARACTER");
+                colSchema.addProp("dbColumnName", col != null ? col.getColumnName() : colName);
+                colSchema.addProp("length", col != null ? safeGetCharLength(col) : 255);
                 fields.name(colName).type(colSchema).withDefault("");
             }
             return fields.endRecord();
         }
 
-        // Fallback to GG metadata key columns when no override provided
+        // 2) Default spec per table (e.g., AEDT074 -> CD_BANC, CD_CENT_CPTU, AN_PROP, NR_SOLI)
+        LinkedHashMap<String, Integer> defaults = defaultKeyColumnSpecs.get(shortNameUpper);
+        if (defaults != null && !defaults.isEmpty()) {
+            System.out.println(">>> [KcopHandler] Using default key spec for " + shortNameUpper + ": " + defaults.keySet());
+            for (Map.Entry<String, Integer> e : defaults.entrySet()) {
+                String colName = e.getKey();
+                int len = e.getValue() != null ? e.getValue() : 255;
+                ColumnMetaData col = findColumnByName(tableMetaData, colName);
+                Schema colSchema = Schema.create(Type.STRING);
+                colSchema.addProp("logicalType", "CHARACTER");
+                colSchema.addProp("dbColumnName", col != null ? col.getColumnName() : colName);
+                colSchema.addProp("length", len);
+                fields.name(colName).type(colSchema).withDefault("");
+            }
+            return fields.endRecord();
+        }
+
+        // 3) Fallback to GG metadata isKeyCol()
         if (tableMetaData != null) {
             LinkedHashMap<String, Schema> selected = new LinkedHashMap<>();
             for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
@@ -441,28 +458,6 @@ public class KcopHandler extends AbstractHandler {
             rec.put(colName, converted);
         }
         return rec;
-    }
-
-    // Defaults used when building key schema fields
-    private Object getDefaultForType(Type t) {
-        switch (t) {
-            case LONG:
-                return 0L;
-            case INT:
-                return 0;
-            case DOUBLE:
-                return 0.0;
-            case FLOAT:
-                return 0.0f;
-            case BOOLEAN:
-                return false;
-            case BYTES:
-                return java.nio.ByteBuffer.wrap(new byte[0]);
-            case STRING:
-                return "";
-            default:
-                return null;
-        }
     }
 
     // Overload: enforce yyyy-MM-dd for DATE and handle DECIMAL according to schema type (STRING vs numeric)
