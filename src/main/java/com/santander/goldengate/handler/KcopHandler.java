@@ -126,7 +126,6 @@ public class KcopHandler extends AbstractHandler {
             kafkaProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
             kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "io.confluent.kafka.serializers.KafkaAvroSerializer");
 
-            // Parse key columns overrides: gg.handler.kafkahandler.keyColumns.<TABLE>=COL1,COL2,...
             for (String propName : kafkaProps.stringPropertyNames()) {
                 if (propName.startsWith("gg.handler.kafkahandler.keyColumns.")) {
                     String tableCode = propName.substring(propName.lastIndexOf('.') + 1).toUpperCase();
@@ -309,6 +308,213 @@ public class KcopHandler extends AbstractHandler {
             System.out.println(">>> CDC Record: " + cdcRecord);
         } catch (Exception ex) {
             System.err.println("[KcopHandler] Error creating/sending Avro: " + ex.getMessage());
+        }
+    }
+
+    // Create a table image record ("beforeImage" or "afterImage") using the envelope schema
+    private GenericRecord createTableRecord(Schema envelopeSchema, String fieldName, Map<String, Object> image) {
+        if (envelopeSchema == null || fieldName == null) {
+            return null;
+        }
+        Field field = envelopeSchema.getField(fieldName);
+        if (field == null) {
+            System.err.println("[KcopHandler] Envelope schema missing field: " + fieldName);
+            return null;
+        }
+        Schema fieldSchema = field.schema();
+        if (fieldSchema.getType() == Type.UNION) {
+            for (Schema s : fieldSchema.getTypes()) {
+                if (s.getType() == Type.RECORD) {
+                    fieldSchema = s;
+                    break;
+                }
+            }
+        }
+        if (fieldSchema.getType() != Type.RECORD) {
+            System.err.println("[KcopHandler] Field " + fieldName + " is not a RECORD schema");
+            return null;
+        }
+
+        GenericRecord rec = new GenericData.Record(fieldSchema);
+        for (Schema.Field colField : fieldSchema.getFields()) {
+            String colName = colField.name();
+            Object raw = image != null ? image.get(colName) : null;
+            Object converted = convertValueToSchemaType(raw, colField.schema(), colName);
+            rec.put(colName, converted);
+        }
+        return rec;
+    }
+
+    // Value conversion with logical types support (DATE/TIMESTAMP/DECIMAL)
+    protected Object convertValueToSchemaType(Object value, Schema schema, String fieldName) {
+        if (value == null) {
+            return schemaTypeConverter.getDefaultValue(schema);
+        }
+        Object out = convertValueToSchemaType(value, schema);
+
+        try {
+            String logical = schema.getProp("logicalType");
+            Type schemaType = schema.getType();
+
+            // DECIMAL
+            boolean isDecimalLogical = logical != null && "DECIMAL".equalsIgnoreCase(logical);
+            boolean isDecimalFieldName = "VL_ALCA_PROP".equalsIgnoreCase(fieldName);
+            if (isDecimalLogical || isDecimalFieldName) {
+                int scale = 0;
+                try {
+                    String prop = schema.getProp("scale");
+                    if (prop != null && !prop.isEmpty()) {
+                        scale = Integer.parseInt(prop);
+                    }
+                } catch (NumberFormatException ignore) {}
+
+                String rawStr = value.toString();
+                if (schemaType == Type.STRING) {
+                    int outScale = Math.max(2, scale);
+                    return formatDecimalString(rawStr, outScale);
+                } else {
+                    try {
+                        String norm = rawStr.trim().replace(',', '.');
+                        BigDecimal bd = new BigDecimal(norm).setScale(Math.max(0, scale), RoundingMode.HALF_UP);
+                        switch (schemaType) {
+                            case LONG:   return bd.longValue();
+                            case INT:    return bd.intValue();
+                            case DOUBLE: return bd.doubleValue();
+                            case FLOAT:  return bd.floatValue();
+                            default:     return out;
+                        }
+                    } catch (Exception e) {
+                        return out instanceof Number ? out : schemaTypeConverter.getDefaultValue(schema);
+                    }
+                }
+            }
+
+            // DATE -> yyyy-MM-dd
+            boolean isDateLogical = logical != null && "DATE".equalsIgnoreCase(logical);
+            boolean isDateFieldName = fieldName != null && fieldName.toUpperCase().startsWith("DT_");
+            if ((isDateLogical || isDateFieldName) && out instanceof CharSequence) {
+                String s = out.toString().replace('/', '-');
+                int cutIdx = Math.max(s.indexOf(' '), s.indexOf('T'));
+                String dateOnly = cutIdx > 0 ? s.substring(0, cutIdx) : s;
+                if (dateOnly.matches("\\d{8}")) {
+                    return dateOnly.substring(0, 4) + "-" + dateOnly.substring(4, 6) + "-" + dateOnly.substring(6, 8);
+                }
+                return dateOnly.length() >= 10 ? dateOnly.substring(0, 10) : dateOnly;
+            }
+
+            // TIMESTAMP -> ISO with 12 fractional digits and 'T'
+            if (logical != null && "TIMESTAMP".equalsIgnoreCase(logical) && out instanceof CharSequence) {
+                String iso = out.toString().replace(' ', 'T');
+                int dotIdx = iso.indexOf('.');
+                if (dotIdx < 0) {
+                    return iso + ".000000000000";
+                }
+                int endIdx = iso.indexOf('Z') > 0 ? iso.indexOf('Z') : iso.length();
+                String prefix = iso.substring(0, dotIdx + 1);
+                String fracAndRest = iso.substring(dotIdx + 1, endIdx);
+                StringBuilder digits = new StringBuilder();
+                for (int i = 0; i < fracAndRest.length(); i++) {
+                    char c = fracAndRest.charAt(i);
+                    if (Character.isDigit(c)) digits.append(c);
+                    else break;
+                }
+                String frac = digits.toString();
+                if (frac.length() > 12) frac = frac.substring(0, 12);
+                else while (frac.length() < 12) frac += '0';
+                String remainder = iso.substring(dotIdx + 1 + digits.length(), endIdx);
+                return prefix + frac + remainder + (endIdx < iso.length() ? iso.substring(endIdx) : "");
+            }
+        } catch (Exception ignore) {}
+
+        return out;
+    }
+
+    // Base conversion by Avro primitive type
+    protected Object convertValueToSchemaType(Object value, Schema schema) {
+        if (value == null) {
+            return schemaTypeConverter.getDefaultValue(schema);
+        }
+        Type type = schema.getType();
+        try {
+            switch (type) {
+                case INT:
+                    return (value instanceof Number) ? ((Number) value).intValue()
+                            : Integer.valueOf(value.toString().trim());
+                case LONG:
+                    if (value instanceof Number) return ((Number) value).longValue();
+                    String ls = value.toString().trim();
+                    if (ls.contains(".")) return (long) Math.round(Double.parseDouble(ls));
+                    return Long.valueOf(ls);
+                case FLOAT:
+                    return (value instanceof Number) ? ((Number) value).floatValue()
+                            : Float.valueOf(value.toString().trim());
+                case DOUBLE:
+                    return (value instanceof Number) ? ((Number) value).doubleValue()
+                            : Double.valueOf(value.toString().trim());
+                case STRING:
+                    return value.toString();
+                case BYTES:
+                    if (value instanceof byte[]) return ByteBuffer.wrap((byte[]) value);
+                    if (value instanceof ByteBuffer) return value;
+                    try {
+                        return ByteBuffer.wrap(Base64.getDecoder().decode(value.toString()));
+                    } catch (IllegalArgumentException e) {
+                        return ByteBuffer.wrap(value.toString().getBytes());
+                    }
+                default:
+                    return value.toString();
+            }
+        } catch (NumberFormatException e) {
+            System.err.println("[KcopHandler] Error converting value " + value + " to type " + type + ": " + e.getMessage());
+            return schemaTypeConverter.getDefaultValue(schema);
+        }
+    }
+
+    // Helper: format decimal string
+    private String formatDecimalString(String raw, int scale) {
+        try {
+            if (raw == null || raw.trim().isEmpty()) {
+                return zeroOfScale(scale);
+            }
+            String norm = raw.trim().replace(',', '.');
+            BigDecimal bd = new BigDecimal(norm).setScale(scale, RoundingMode.HALF_UP);
+            return bd.toPlainString();
+        } catch (Exception e) {
+            try {
+                BigDecimal bd = new BigDecimal(String.valueOf(Double.parseDouble(raw))).setScale(scale, RoundingMode.HALF_UP);
+                return bd.toPlainString();
+            } catch (Exception ignore) {
+                return zeroOfScale(scale);
+            }
+        }
+    }
+
+    private String zeroOfScale(int scale) {
+        if (scale <= 0) return "0";
+        StringBuilder sb = new StringBuilder("0.");
+        for (int i = 0; i < scale; i++) sb.append('0');
+        return sb.toString();
+    }
+
+    // Format millis to "yyyy-MM-dd HH:mm:ss.SSSSSSSSSSS"
+    private String formatMillisSpace12(long millis) {
+        LocalDateTime ldt = LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault());
+        String base = ldt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        String frac9 = String.format("%09d", ldt.getNano());
+        StringBuilder frac12 = new StringBuilder(frac9);
+        while (frac12.length() < 12) frac12.append('0');
+        if (frac12.length() > 12) frac12.setLength(12);
+        return base + "." + frac12;
+    }
+
+    // Extract raw value (encode byte[] to Base64)
+    protected Object extractValue(Object value) {
+        try {
+            if (value == null) return null;
+            if (value instanceof byte[]) return Base64.getEncoder().encodeToString((byte[]) value);
+            return value;
+        } catch (Exception ignore) {
+            return null;
         }
     }
 
@@ -732,11 +938,14 @@ public class KcopHandler extends AbstractHandler {
         return 255;
     }
 
-    // Build GenericRecord key from afterImage/beforeImage map
-    private String buildKeyString(String table, Schema keySchema, GenericRecord keyRecord) {
+    // Build GenericRecord key from afterImage/beforeImage record inside the envelope
+    private String buildKeyString(String table, Schema keySchema, GenericRecord envelopeRecord) {
+        // Prefer afterImage; fallback to beforeImage
+        GenericRecord image = getTableImageRecord(envelopeRecord);
+
         StringBuilder sb = new StringBuilder();
         for (Schema.Field f : keySchema.getFields()) {
-            Object v = keyRecord.get(f.name());
+            Object v = safeGetFromRecord(image, f.name());
             String s = (v == null) ? "" : v.toString();
 
             int len = 0;
@@ -745,8 +954,7 @@ public class KcopHandler extends AbstractHandler {
                 if (l != null) {
                     len = Integer.parseInt(l);
                 }
-            } catch (Exception ignore) {
-            }
+            } catch (Exception ignore) { }
             if (len > 0 && s.length() < len) {
                 sb.append("0".repeat(len - s.length()));
             }
@@ -755,313 +963,23 @@ public class KcopHandler extends AbstractHandler {
         return sb.toString();
     }
 
-    // Create a table image record ("beforeImage" or "afterImage") using the envelope schema
-    private GenericRecord createTableRecord(Schema envelopeSchema, String fieldName, Map<String, Object> image) {
-        if (envelopeSchema == null || fieldName == null) {
-            return null;
-        }
-        Field field = envelopeSchema.getField(fieldName);
-        if (field == null) {
-            System.err.println("[KcopHandler] Envelope schema missing field: " + fieldName);
-            return null;
-        }
-        Schema fieldSchema = field.schema();
-        // If field is a union, pick the non-null record schema
-        if (fieldSchema.getType() == Type.UNION) {
-            for (Schema s : fieldSchema.getTypes()) {
-                if (s.getType() == Type.RECORD) {
-                    fieldSchema = s;
-                    break;
-                }
-            }
-        }
-        if (fieldSchema.getType() != Type.RECORD) {
-            System.err.println("[KcopHandler] Field " + fieldName + " is not a RECORD schema");
-            return null;
-        }
-
-        GenericRecord rec = new GenericData.Record(fieldSchema);
-        for (Schema.Field colField : fieldSchema.getFields()) {
-            String colName = colField.name();
-            Object raw = image != null ? image.get(colName) : null;
-            Object converted = convertValueToSchemaType(raw, colField.schema(), colName);
-            rec.put(colName, converted);
-        }
-        return rec;
+    // Helper: select the inner table image record
+    private GenericRecord getTableImageRecord(GenericRecord envelopeRecord) {
+        if (envelopeRecord == null) return null;
+        Object after = null, before = null;
+        try { after = envelopeRecord.get("afterImage"); } catch (Exception ignore) { }
+        try { before = envelopeRecord.get("beforeImage"); } catch (Exception ignore) { }
+        if (after instanceof GenericRecord) return (GenericRecord) after;
+        if (before instanceof GenericRecord) return (GenericRecord) before;
+        return null;
     }
 
-    // Overload: enforce yyyy-MM-dd for DATE and handle DECIMAL according to schema type (STRING vs numeric)
-    protected Object convertValueToSchemaType(Object value, Schema schema, String fieldName) {
-        if (value == null) {
-            return schemaTypeConverter.getDefaultValue(schema);
-        }
-        Object out = convertValueToSchemaType(value, schema); // base logic
-
+    // Helper: safely read a field from a record (avoid AvroRuntimeException)
+    private Object safeGetFromRecord(GenericRecord record, String fieldName) {
+        if (record == null || fieldName == null) return null;
         try {
-            String logical = schema.getProp("logicalType");
-            Type schemaType = schema.getType();
-
-            // DECIMAL: if schema type is STRING, format as "0.00"; if numeric, return numeric respecting scale (scale=0 -> integer)
-            boolean isDecimalLogical = logical != null && "DECIMAL".equalsIgnoreCase(logical);
-            boolean isDecimalFieldName = "VL_ALCA_PROP".equalsIgnoreCase(fieldName); // explicit per feedback
-            if (isDecimalLogical || isDecimalFieldName) {
-                int scale = 0;
-                try {
-                    String prop = schema.getProp("scale");
-                    if (prop != null && !prop.isEmpty()) {
-                        scale = Integer.parseInt(prop);
-                    }
-                } catch (NumberFormatException ignore) {
-                }
-
-                String rawStr = (value == null) ? null : value.toString();
-
-                if (schemaType == Type.STRING) {
-                    int outScale = Math.max(2, scale); // garante 2 casas mesmo se scale=0
-                    String formatted = formatDecimalString(rawStr, outScale);
-                    return formatted;
-                } else {
-                    // Numeric schema: parse and return numeric (no string) to avoid Avro type mismatch
-                    try {
-                        String norm = rawStr == null ? "0" : rawStr.trim().replace(',', '.');
-                        BigDecimal bd = new BigDecimal(norm);
-                        bd = bd.setScale(Math.max(0, scale), RoundingMode.HALF_UP);
-                        switch (schemaType) {
-                            case LONG:
-                                return bd.longValue();
-                            case INT:
-                                return bd.intValue();
-                            case DOUBLE:
-                                return bd.doubleValue();
-                            case FLOAT:
-                                return bd.floatValue();
-                            default:
-                                return out; // fallback to base
-                        }
-                    } catch (Exception e) {
-                        // fallback: base conversion already handled numerics; return default if needed
-                        return out instanceof Number ? out : schemaTypeConverter.getDefaultValue(schema);
-                    }
-                }
-            }
-
-            // DATE trimming (yyyy-MM-dd)
-            boolean isDateLogical = logical != null && "DATE".equalsIgnoreCase(logical);
-            boolean isDateFieldName = fieldName != null && fieldName.toUpperCase().startsWith("DT_");
-            if ((isDateLogical || isDateFieldName) && out instanceof CharSequence) {
-                String s = out.toString().replace('/', '-');
-                int cutIdx = -1;
-                int spaceIdx = s.indexOf(' ');
-                int tIdx = s.indexOf('T');
-                if (spaceIdx > 0) {
-                    cutIdx = spaceIdx;
-                } else if (tIdx > 0) {
-                    cutIdx = tIdx;
-                }
-                String dateOnly = cutIdx > 0 ? s.substring(0, cutIdx) : s;
-                if (dateOnly.matches("\\d{8}")) {
-                    return dateOnly.substring(0, 4) + "-" + dateOnly.substring(4, 6) + "-" + dateOnly.substring(6, 8);
-                }
-                return dateOnly.length() >= 10 ? dateOnly.substring(0, 10) : dateOnly;
-            }
-        } catch (Exception ignore) {
-        }
-        return out;
-    }
-
-    protected Object convertValueToSchemaType(Object value, Schema schema) {
-        if (value == null) {
-            return schemaTypeConverter.getDefaultValue(schema);
-        }
-        Type type = schema.getType();
-        try {
-            switch (type) {
-                case INT:
-                    if (value instanceof Number) {
-                        return ((Number) value).intValue();
-                    }
-                    return Integer.valueOf(value.toString().trim());
-                case LONG:
-                    if (value instanceof Number) {
-                        return ((Number) value).longValue();
-                    }
-                    String ls = value.toString().trim();
-                    if (ls.contains(".")) {
-                        double d = Double.parseDouble(ls);
-                        return (long) Math.round(d);
-                    }
-                    return Long.valueOf(ls);
-                case FLOAT:
-                    if (value instanceof Number) {
-                        return ((Number) value).floatValue();
-                    }
-                    return Float.valueOf(value.toString().trim());
-                case DOUBLE:
-                    if (value instanceof Number) {
-                        return ((Number) value).doubleValue();
-                    }
-                    return Double.valueOf(value.toString().trim());
-                case STRING: {
-                    String s = value.toString();
-                    String logical = schema.getProp("logicalType");
-
-                    // DECIMAL: format as string with fixed scale (e.g., "0.00")
-                    if (logical != null && "DECIMAL".equalsIgnoreCase(logical)) {
-                        int scale = 2;
-                        try {
-                            String prop = schema.getProp("scale");
-                            if (prop != null && !prop.isEmpty()) {
-                                scale = Integer.parseInt(prop);
-                            }
-                        } catch (NumberFormatException ignore) {
-                        }
-                        return formatDecimalString(s, scale);
-                    }
-
-                    // DATE: strictly yyyy-MM-dd (remove 'T' and any time/fraction)
-                    if (logical != null && "DATE".equalsIgnoreCase(logical)) {
-                        String norm = s.replace('/', '-');
-                        int cutIdx = -1;
-                        int spaceIdx = norm.indexOf(' ');
-                        int tIdx = norm.indexOf('T');
-                        if (spaceIdx > 0) {
-                            cutIdx = spaceIdx;
-                        } else if (tIdx > 0) {
-                            cutIdx = tIdx;
-                        }
-                        String dateOnly = cutIdx > 0 ? norm.substring(0, cutIdx) : norm;
-                        if (dateOnly.matches("\\d{8}")) {
-                            return dateOnly.substring(0, 4) + "-" + dateOnly.substring(4, 6) + "-" + dateOnly.substring(6, 8);
-                        }
-                        return dateOnly.length() >= 10 ? dateOnly.substring(0, 10) : dateOnly;
-                    }
-
-                    // TIMESTAMP: ISO with 'T' and 12 fractional digits
-                    if (logical != null && "TIMESTAMP".equalsIgnoreCase(logical)) {
-                        String iso = s.replace(' ', 'T');
-                        int dotIdx = iso.indexOf('.');
-                        if (dotIdx < 0) {
-                            // No fractional part: append 12 zeros
-                            return iso + ".000000000000";
-                        }
-                        int endIdx = iso.indexOf('Z') > 0 ? iso.indexOf('Z') : iso.length();
-                        String prefix = iso.substring(0, dotIdx + 1);
-                        String fracAndRest = iso.substring(dotIdx + 1, endIdx);
-                        StringBuilder digits = new StringBuilder();
-                        for (int i = 0; i < fracAndRest.length(); i++) {
-                            char c = fracAndRest.charAt(i);
-                            if (Character.isDigit(c)) {
-                                digits.append(c);
-                            } else {
-                                break;
-                            }
-                        }
-                        String frac = digits.toString();
-                        if (frac.length() > 12) {
-                            frac = frac.substring(0, 12);
-                        } else if (frac.length() < 12) {
-                            StringBuilder pad = new StringBuilder(frac);
-                            while (pad.length() < 12) {
-                                pad.append('0');
-                            }
-                            frac = pad.toString();
-                        }
-                        String remainder = iso.substring(dotIdx + 1 + digits.length(), endIdx);
-                        return prefix + frac + remainder + (endIdx < iso.length() ? iso.substring(endIdx) : "");
-                    }
-
-                    return s;
-                }
-                case BYTES:
-                    if (value instanceof byte[]) {
-                        return ByteBuffer.wrap((byte[]) value);
-                    }
-                    if (value instanceof ByteBuffer) {
-                        return value;
-                    }
-                    try {
-                        return ByteBuffer.wrap(Base64.getDecoder().decode(value.toString()));
-                    } catch (IllegalArgumentException e) {
-                        return ByteBuffer.wrap(value.toString().getBytes());
-                    }
-                default:
-                    return value.toString();
-            }
-        } catch (NumberFormatException e) {
-            System.err.println("[KcopHandler] Error converting value " + value + " to type " + type + ": " + e.getMessage());
-            return schemaTypeConverter.getDefaultValue(schema);
-        }
-    }
-
-    // Helper: format decimal string with fixed scale (no scientific notation)
-    private String formatDecimalString(String raw, int scale) {
-        try {
-            if (raw == null || raw.trim().isEmpty()) {
-                return zeroOfScale(scale);
-            }
-            String norm = raw.trim().replace(',', '.');
-            BigDecimal bd = new BigDecimal(norm);
-            bd = bd.setScale(scale, RoundingMode.HALF_UP);
-            return bd.toPlainString();
-        } catch (Exception e) {
-            // Fallback: try parse as number; else return zero with scale
-            try {
-                BigDecimal bd = new BigDecimal(String.valueOf(Double.parseDouble(raw)));
-                bd = bd.setScale(scale, RoundingMode.HALF_UP);
-                return bd.toPlainString();
-            } catch (Exception ignore) {
-                return zeroOfScale(scale);
-            }
-        }
-    }
-
-    private String zeroOfScale(int scale) {
-        if (scale <= 0) {
-            return "0";
-        }
-        StringBuilder sb = new StringBuilder("0.");
-        for (int i = 0; i < scale; i++) {
-            sb.append('0');
-        }
-        return sb.toString();
-    }
-
-    private String formatMillisSpace12(long millis) {
-        LocalDateTime ldt = LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault());
-        String base = ldt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-        // nanos: 0..999_999_999 (9 digits), pad right to 12 digits
-        String frac9 = String.format("%09d", ldt.getNano());
-        StringBuilder frac12 = new StringBuilder(frac9);
-        while (frac12.length() < 12) {
-            frac12.append('0');
-        }
-        if (frac12.length() > 12) {
-            frac12.setLength(12);
-        }
-        return base + "." + frac12;
-    }
-
-    private String getColumnNameByIndex(int index, TableMetaData tableMetaData) {
-        try {
-            ColumnMetaData colMeta = safeGetColumnMetaData(tableMetaData, index);
-            if (colMeta != null) {
-                return colMeta.getColumnName();
-            }
-        } catch (Exception e) {
-            System.err.println("[KcopHandler] Error getting column name at index " + index + ": " + e.getMessage());
-        }
-        return "COL_" + index;
-    }
-
-    protected Object extractValue(Object value) {
-        try {
-            if (value == null) {
-                return null;
-            }
-            if (value instanceof byte[]) {
-                return Base64.getEncoder().encodeToString((byte[]) value);
-            }
-            return value;
+            if (record.getSchema().getField(fieldName) == null) return null;
+            return record.get(fieldName);
         } catch (Exception ignore) {
             return null;
         }
@@ -1287,5 +1205,17 @@ public class KcopHandler extends AbstractHandler {
             }
         }
         return null;
+    }
+
+    private String getColumnNameByIndex(int index, TableMetaData tableMetaData) {
+        try {
+            ColumnMetaData colMeta = safeGetColumnMetaData(tableMetaData, index);
+            if (colMeta != null) {
+                return colMeta.getColumnName();
+            }
+        } catch (Exception e) {
+            System.err.println("[KcopHandler] Error getting column name at index " + index + ": " + e.getMessage());
+        }
+        return "COL_" + index;
     }
 }
