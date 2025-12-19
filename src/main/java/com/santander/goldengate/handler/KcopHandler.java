@@ -368,13 +368,33 @@ public class KcopHandler extends AbstractHandler {
             Schema newEffective = effective;
 
             String logical = effective.getProp("logicalType");
-            if (effective.getType() == Schema.Type.STRING && "CHARACTER".equalsIgnoreCase(logical)) {
+
+            if (effective.getType() == Schema.Type.STRING
+                    && "CHARACTER".equalsIgnoreCase(logical)) {
+
                 ColumnMetaData col = findColumnByName(tmd, f.name());
-                int len = (col != null) ? safeGetCharLength(col) : 255;
-                // clona o schema do field (STRING) e injeta length
+
+                int byteLen = 255;
+                if (col != null) {
+                    try {
+                        Method m = col.getClass().getMethod("getColumnLength");
+                        Object v = m.invoke(col);
+                        if (v instanceof Number && ((Number) v).intValue() > 0) {
+                            byteLen = ((Number) v).intValue();
+                        }
+                    } catch (Exception ignore) {
+                    }
+                }
+
                 Schema s2 = Schema.create(Schema.Type.STRING);
+
+                // copia tudo MENOS length antigo
                 copySchemaPropsExcept(effective, s2, "length");
-                s2.addProp("length", String.valueOf(len));
+
+                // deixa explícito: BYTE length
+                s2.addProp("length", String.valueOf(byteLen));
+                s2.addProp("lengthSemantics", "BYTE");
+
                 newEffective = s2;
             }
 
