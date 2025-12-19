@@ -216,7 +216,7 @@ public class KcopHandler extends AbstractHandler {
             Schema avroSchema = schemaManager.getOrCreateAvroSchema(table, tableMetaData);
             Schema avroSchemaFixed = rebuildEnvelopeWithClonedTableSchema(avroSchema, tableMetaData);
             System.out.println(">>> [KcopHandler] Using Avro schema: " + avroSchemaFixed.getFields());
-            
+
             GenericRecord cdcRecord = new GenericData.Record(avroSchemaFixed);
             System.out.println(">>> [KcopHandler] Created CDC GenericRecord " + cdcRecord.getSchema());
             if (!beforeImage.isEmpty()) {
@@ -367,12 +367,12 @@ public class KcopHandler extends AbstractHandler {
 
             String logical = effective.getProp("logicalType");
             if (effective.getType() == Schema.Type.STRING && "CHARACTER".equalsIgnoreCase(logical)) {
-                ColumnMetaData col = findColumnByName(tmd, f.name()); 
+                ColumnMetaData col = findColumnByName(tmd, f.name());
                 int len = (col != null) ? safeGetCharLength(col) : 255;
                 // clona o schema do field (STRING) e injeta length
                 Schema s2 = Schema.create(Schema.Type.STRING);
                 copySchemaPropsExcept(effective, s2, "length");
-                s2.addProp("length",  String.valueOf(len));
+                s2.addProp("length", String.valueOf(len));
                 newEffective = s2;
             }
 
@@ -394,18 +394,24 @@ public class KcopHandler extends AbstractHandler {
     }
 
     private void copySchemaPropsExcept(Schema from, Schema to, String... excluded) {
-    if (from == null || to == null) return;
+        if (from == null || to == null) {
+            return;
+        }
 
-    java.util.Set<String> ex = new java.util.HashSet<>(java.util.Arrays.asList(excluded));
+        java.util.Set<String> ex = new java.util.HashSet<>(java.util.Arrays.asList(excluded));
 
-    for (Map.Entry<String, Object> e : from.getObjectProps().entrySet()) {
-        if (e.getKey() == null) continue;
-        if (ex.contains(e.getKey())) continue;
-        if (e.getValue() != null) {
-            to.addProp(e.getKey(), String.valueOf(e.getValue()));
+        for (Map.Entry<String, Object> e : from.getObjectProps().entrySet()) {
+            if (e.getKey() == null) {
+                continue;
+            }
+            if (ex.contains(e.getKey())) {
+                continue;
+            }
+            if (e.getValue() != null) {
+                to.addProp(e.getKey(), String.valueOf(e.getValue()));
+            }
         }
     }
-}
 
     private void copySchemaProps(Schema from, Schema to) {
         if (from == null || to == null) {
@@ -447,7 +453,7 @@ public class KcopHandler extends AbstractHandler {
             return envelope;
         }
 
-        Schema tableRecord = extractTableRecordSchema(envelope); 
+        Schema tableRecord = extractTableRecordSchema(envelope);
         if (tableRecord == null) {
             return envelope;
         }
@@ -462,7 +468,6 @@ public class KcopHandler extends AbstractHandler {
 
         for (Schema.Field f : envelope.getFields()) {
             if ("beforeImage".equals(f.name()) || "afterImage".equals(f.name())) {
-                // preserva union com null, mas substitui o record interno
                 Schema newFieldSchema = replaceRecordInsideUnion(f.schema(), clonedTable);
                 Schema.Field nf = new Schema.Field(f.name(), newFieldSchema, f.doc(), f.defaultVal());
                 copyProps(f, nf);
@@ -633,20 +638,49 @@ public class KcopHandler extends AbstractHandler {
         if (col == null) {
             return 255;
         }
-        String[] candidates = new String[]{"getBinaryLength", "getLength", "getDisplaySize"};
-        for (String mName : candidates) {
+
+        // 1️⃣ métodos que retornam tamanho lógico da coluna (CHAR length)
+        String[] charLengthCandidates = new String[]{
+            "getLength",
+            "getCharLength",
+            "getColumnLength"
+        };
+
+        for (String mName : charLengthCandidates) {
             try {
                 Method m = col.getClass().getMethod(mName);
                 Object v = m.invoke(col);
                 if (v instanceof Number) {
                     int len = ((Number) v).intValue();
-                    if (len > 0) {
+                    if (len > 0 && len < 10000) {
                         return len;
                     }
                 }
             } catch (Exception ignore) {
             }
         }
+
+        // 2️⃣ fallback: parse do datatype (CHAR(4), VARCHAR2(4 CHAR), etc.)
+        try {
+            String dt = col.getDataType() != null ? col.getDataType().toString() : null;
+            if (dt != null) {
+                int l = dt.indexOf('(');
+                int r = dt.indexOf(')');
+                if (l > 0 && r > l) {
+                    String inside = dt.substring(l + 1, r).trim();
+                    if (inside.contains(",")) {
+                        inside = inside.substring(0, inside.indexOf(','));
+                    }
+                    int parsed = Integer.parseInt(inside.trim());
+                    if (parsed > 0) {
+                        return parsed;
+                    }
+                }
+            }
+        } catch (Exception ignore) {
+        }
+
+        // 3️⃣ último recurso (nunca displaySize)
         return 255;
     }
 
