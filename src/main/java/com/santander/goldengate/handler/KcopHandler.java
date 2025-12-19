@@ -61,11 +61,9 @@ public class KcopHandler extends AbstractHandler {
     private String kafkaBootstrapServers;
     private SchemaRegistryClient schemaRegistryClient;
 
-    private String lastRegisteredTopic = null;   // avoid repeated registry in hot loops
+    private String lastRegisteredTopic = null;
     private Map<String, String[]> keyColumnsOverrides = new HashMap<>();
     private Map<String, LinkedHashMap<String, Integer>> defaultKeyColumnSpecs = new HashMap<>();
-    // Control record name case for key schema (lower|upper|preserve), default lower to match SR subjects like aedt098
-    private String keySchemaRecordNameCase = "lower";
 
     public KcopHandler() {
         System.out.println(">>> [KcopHandler] Constructor called");
@@ -269,8 +267,8 @@ public class KcopHandler extends AbstractHandler {
 
                 System.out.println(">>> [KcopHandler] Registering value schema:"
                         + " subject=" + valueSubject
-                        + " schemaName=" + avroSchema.getFullName());
-                schemaRegistryClient.registerIfNeeded(valueSubject, avroSchema);
+                        + " schemaName=" + avroSchemaFixed.getFullName());
+                schemaRegistryClient.registerIfNeeded(valueSubject, avroSchemaFixed);
 
                 System.out.println(">>> [KcopHandler] Registering key schema:"
                         + " subject=" + keySubject
@@ -283,7 +281,7 @@ public class KcopHandler extends AbstractHandler {
                 lastRegisteredTopic = topic;
             }
 
-            System.out.println(">>> [KcopHandler] Envelope schema (pretty): " + avroSchema.toString(true));
+            System.out.println(">>> [KcopHandler] Envelope schema (pretty): " + avroSchemaFixed.toString(true));
             System.out.println(">>> [KcopHandler] CDC Record payload: " + cdcRecord);
             System.out.println(">>> [KcopHandler] Key Record payload: " + keyRecord);
             System.out.println(">>> [KcopHandler] BeforeImage map: " + beforeImage);
@@ -306,7 +304,7 @@ public class KcopHandler extends AbstractHandler {
                 }
             });
 
-            System.out.println(">>> SCHEMA: " + avroSchema.toString(true));
+            System.out.println(">>> SCHEMA: " + avroSchemaFixed.toString(true));
             System.out.println(">>> CDC Record: " + cdcRecord);
         } catch (Exception ex) {
             System.err.println("[KcopHandler] Error creating/sending Avro: " + ex.getMessage());
@@ -367,16 +365,14 @@ public class KcopHandler extends AbstractHandler {
 
             Schema newEffective = effective;
 
-            // Ajuste só para STRING com logicalType CHARACTER (se esse for o teu padrão)
             String logical = effective.getProp("logicalType");
             if (effective.getType() == Schema.Type.STRING && "CHARACTER".equalsIgnoreCase(logical)) {
-                ColumnMetaData col = findColumnByName(tmd, f.name()); // seu método existe :contentReference[oaicite:2]{index=2}
-                int len = (col != null) ? safeGetCharLength(col) : 255; // aqui você pode melhorar safeGetCharLength
+                ColumnMetaData col = findColumnByName(tmd, f.name()); 
+                int len = (col != null) ? safeGetCharLength(col) : 255;
                 // clona o schema do field (STRING) e injeta length
                 Schema s2 = Schema.create(Schema.Type.STRING);
-                // copia props existentes (logicalType, dbColumnName etc.)
-                copySchemaProps(effective, s2);
-                s2.addProp("length", len);
+                copySchemaPropsExcept(effective, s2, "length");
+                s2.addProp("length",  String.valueOf(len));
                 newEffective = s2;
             }
 
@@ -396,6 +392,20 @@ public class KcopHandler extends AbstractHandler {
         copyRecordProps(record, out);
         return out;
     }
+
+    private void copySchemaPropsExcept(Schema from, Schema to, String... excluded) {
+    if (from == null || to == null) return;
+
+    java.util.Set<String> ex = new java.util.HashSet<>(java.util.Arrays.asList(excluded));
+
+    for (Map.Entry<String, Object> e : from.getObjectProps().entrySet()) {
+        if (e.getKey() == null) continue;
+        if (ex.contains(e.getKey())) continue;
+        if (e.getValue() != null) {
+            to.addProp(e.getKey(), String.valueOf(e.getValue()));
+        }
+    }
+}
 
     private void copySchemaProps(Schema from, Schema to) {
         if (from == null || to == null) {
@@ -437,8 +447,7 @@ public class KcopHandler extends AbstractHandler {
             return envelope;
         }
 
-        // pega o schema RECORD usado em before/after (você já tem método parecido)
-        Schema tableRecord = extractTableRecordSchema(envelope); // seu método existe :contentReference[oaicite:1]{index=1}
+        Schema tableRecord = extractTableRecordSchema(envelope); 
         if (tableRecord == null) {
             return envelope;
         }
@@ -459,7 +468,6 @@ public class KcopHandler extends AbstractHandler {
                 copyProps(f, nf);
                 fa = fa.name(nf.name()).type(nf.schema()).withDefault(nf.defaultVal());
             } else {
-                // campos de controle (A_ENTTYP etc.) mantém
                 Schema.Field nf = new Schema.Field(f.name(), f.schema(), f.doc(), f.defaultVal());
                 copyProps(f, nf);
                 fa = fa.name(nf.name()).type(nf.schema()).withDefault(nf.defaultVal());
@@ -603,20 +611,6 @@ public class KcopHandler extends AbstractHandler {
             }
         }
         return fields.endRecord();
-    }
-
-    private String applyCasePolicy(String name) {
-        if (name == null) {
-            return "table";
-        }
-        switch (keySchemaRecordNameCase == null ? "lower" : keySchemaRecordNameCase.toLowerCase()) {
-            case "upper":
-                return name.toUpperCase();
-            case "preserve":
-                return name;
-            default:
-                return name.toLowerCase();
-        }
     }
 
     // Find a column by name (case-insensitive)
