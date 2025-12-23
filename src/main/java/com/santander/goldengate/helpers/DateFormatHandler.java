@@ -43,4 +43,18 @@ public class DateFormatHandler {
         while (frac18.length() < 18) frac18.append('0');
         return base + "." + frac18;
     }
+
+        public String formatMillisSpace12(long millis) {
+        LocalDateTime ldt = LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault());
+        String base = ldt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        String frac9 = String.format("%09d", ldt.getNano());
+        StringBuilder frac12 = new StringBuilder(frac9);
+        while (frac12.length() < 12) {
+            frac12.append('0');
+        }
+        if (frac12.length() > 12) {
+            frac12.setLength(12);
+        }
+        return base + "." + frac12;
+    }
 }

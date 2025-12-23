@@ -5,6 +5,7 @@ com/santander/goldengate/handler/KcopHandler$1.class
 com/santander/goldengate/handler/KcopHandler.class
 com/santander/goldengate/handler/kafka/KafkaPublisher.class
 com/santander/goldengate/helpers/DateFormatHandler.class
+com/santander/goldengate/helpers/CharFormatHandler.class
 com/santander/goldengate/handler/SchemaRegistryClient.class
 com/santander/goldengate/helpers/EntityTypeFormatHandler.class
 com/santander/goldengate/helpers/SchemaTypeConverter.class

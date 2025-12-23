@@ -7,17 +7,16 @@ import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.ByteBuffer;
-import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import javax.naming.directory.NoSuchAttributeException;
 
@@ -31,6 +30,8 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 
+import com.santander.goldengate.helpers.CharFormatHandler;
+import com.santander.goldengate.helpers.DateFormatHandler;
 import com.santander.goldengate.helpers.EntityTypeFormatHandler;
 import com.santander.goldengate.helpers.SchemaTypeConverter;
 
@@ -60,12 +61,14 @@ public class KcopHandler extends AbstractHandler {
     private String topicMappingTemplate;
     private String kafkaBootstrapServers;
     private SchemaRegistryClient schemaRegistryClient;
+    private DateFormatHandler dateFormatHandler = new DateFormatHandler();
 
     private String lastRegisteredTopic = null;
     private Map<String, String[]> keyColumnsOverrides = new HashMap<>();
+    private CharFormatHandler charFormatHandler;
     private Map<String, LinkedHashMap<String, Integer>> defaultKeyColumnSpecs = new HashMap<>();
 
-    private final java.util.Set<String> loggedLenCols = java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+    private final Set<String> loggedLenCols = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     public KcopHandler() {
         System.out.println(">>> [KcopHandler] Constructor called");
@@ -215,7 +218,7 @@ public class KcopHandler extends AbstractHandler {
 
         try {
             Schema avroSchema = schemaManager.getOrCreateAvroSchema(table, tableMetaData);
-            Schema avroSchemaFixed = rebuildEnvelopeWithClonedTableSchema(avroSchema, tableMetaData);
+            Schema avroSchemaFixed = schemaTypeConverter.rebuildEnvelopeWithClonedTableSchema(avroSchema, tableMetaData);
             System.out.println(">>> [KcopHandler] Using Avro schema: " + avroSchemaFixed.getFields());
 
             GenericRecord cdcRecord = new GenericData.Record(avroSchemaFixed);
@@ -236,12 +239,12 @@ public class KcopHandler extends AbstractHandler {
             cdcRecord.put("A_ENTTYP", opType);
             cdcRecord.put("A_CCID", tx.getTranID() != null ? tx.getTranID().toString() : null);
             // Use event/operation timestamp with space separator and 12 fractional digits
-            cdcRecord.put("A_TIMSTAMP", formatMillisSpace12(extractOperationTimestampMillis(event, tx, operation))); // changed
-            String ggUser = extractUser(event, tx, operation);
+            cdcRecord.put("A_TIMSTAMP", dateFormatHandler.formatMillisSpace12(extractOperationTimestampMillis(event, tx, operation))); // changed
+            //String ggUser = extractUser(event, tx, operation);
             // Fallback to system user if missing
-            String sysUser = System.getProperty("user.name", "unknown");
-            cdcRecord.put("A_JOBUSER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser); // changed
-            cdcRecord.put("A_USER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser);    // changed
+            //String sysUser = System.getProperty("user.name", "unknown");
+            //cdcRecord.put("A_JOBUSER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser); // changed
+            //cdcRecord.put("A_USER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser);    // changed
 
             // Build topic
             final String topic = resolveTopic(topicMappingTemplate, table);
@@ -366,7 +369,8 @@ public class KcopHandler extends AbstractHandler {
                     if (prop != null && !prop.isEmpty()) {
                         scale = Integer.parseInt(prop);
                     }
-                } catch (NumberFormatException ignore) {}
+                } catch (NumberFormatException ignore) {
+                }
 
                 String rawStr = value.toString();
                 if (schemaType == Type.STRING) {
@@ -377,11 +381,16 @@ public class KcopHandler extends AbstractHandler {
                         String norm = rawStr.trim().replace(',', '.');
                         BigDecimal bd = new BigDecimal(norm).setScale(Math.max(0, scale), RoundingMode.HALF_UP);
                         switch (schemaType) {
-                            case LONG:   return bd.longValue();
-                            case INT:    return bd.intValue();
-                            case DOUBLE: return bd.doubleValue();
-                            case FLOAT:  return bd.floatValue();
-                            default:     return out;
+                            case LONG:
+                                return bd.longValue();
+                            case INT:
+                                return bd.intValue();
+                            case DOUBLE:
+                                return bd.doubleValue();
+                            case FLOAT:
+                                return bd.floatValue();
+                            default:
+                                return out;
                         }
                     } catch (Exception e) {
                         return out instanceof Number ? out : schemaTypeConverter.getDefaultValue(schema);
@@ -415,16 +424,25 @@ public class KcopHandler extends AbstractHandler {
                 StringBuilder digits = new StringBuilder();
                 for (int i = 0; i < fracAndRest.length(); i++) {
                     char c = fracAndRest.charAt(i);
-                    if (Character.isDigit(c)) digits.append(c);
-                    else break;
+                    if (Character.isDigit(c)) {
+                        digits.append(c); 
+                    }else {
+                        break;
+                    }
                 }
                 String frac = digits.toString();
-                if (frac.length() > 12) frac = frac.substring(0, 12);
-                else while (frac.length() < 12) frac += '0';
+                if (frac.length() > 12) {
+                    frac = frac.substring(0, 12); 
+                }else {
+                    while (frac.length() < 12) {
+                        frac += '0';
+                    }
+                }
                 String remainder = iso.substring(dotIdx + 1 + digits.length(), endIdx);
                 return prefix + frac + remainder + (endIdx < iso.length() ? iso.substring(endIdx) : "");
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) {
+        }
 
         return out;
     }
@@ -441,9 +459,13 @@ public class KcopHandler extends AbstractHandler {
                     return (value instanceof Number) ? ((Number) value).intValue()
                             : Integer.valueOf(value.toString().trim());
                 case LONG:
-                    if (value instanceof Number) return ((Number) value).longValue();
+                    if (value instanceof Number) {
+                        return ((Number) value).longValue();
+                    }
                     String ls = value.toString().trim();
-                    if (ls.contains(".")) return (long) Math.round(Double.parseDouble(ls));
+                    if (ls.contains(".")) {
+                        return (long) Math.round(Double.parseDouble(ls));
+                    }
                     return Long.valueOf(ls);
                 case FLOAT:
                     return (value instanceof Number) ? ((Number) value).floatValue()
@@ -454,8 +476,12 @@ public class KcopHandler extends AbstractHandler {
                 case STRING:
                     return value.toString();
                 case BYTES:
-                    if (value instanceof byte[]) return ByteBuffer.wrap((byte[]) value);
-                    if (value instanceof ByteBuffer) return value;
+                    if (value instanceof byte[]) {
+                        return ByteBuffer.wrap((byte[]) value);
+                    }
+                    if (value instanceof ByteBuffer) {
+                        return value;
+                    }
                     try {
                         return ByteBuffer.wrap(Base64.getDecoder().decode(value.toString()));
                     } catch (IllegalArgumentException e) {
@@ -490,249 +516,31 @@ public class KcopHandler extends AbstractHandler {
     }
 
     private String zeroOfScale(int scale) {
-        if (scale <= 0) return "0";
+        if (scale <= 0) {
+            return "0";
+        }
         StringBuilder sb = new StringBuilder("0.");
-        for (int i = 0; i < scale; i++) sb.append('0');
+        for (int i = 0; i < scale; i++) {
+            sb.append('0');
+        }
         return sb.toString();
-    }
-
-    // Format millis to "yyyy-MM-dd HH:mm:ss.SSSSSSSSSSS"
-    private String formatMillisSpace12(long millis) {
-        LocalDateTime ldt = LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneId.systemDefault());
-        String base = ldt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-        String frac9 = String.format("%09d", ldt.getNano());
-        StringBuilder frac12 = new StringBuilder(frac9);
-        while (frac12.length() < 12) frac12.append('0');
-        if (frac12.length() > 12) frac12.setLength(12);
-        return base + "." + frac12;
     }
 
     // Extract raw value (encode byte[] to Base64)
     protected Object extractValue(Object value) {
         try {
-            if (value == null) return null;
-            if (value instanceof byte[]) return Base64.getEncoder().encodeToString((byte[]) value);
+            if (value == null) {
+                return null;
+            }
+            if (value instanceof byte[]) {
+                return Base64.getEncoder().encodeToString((byte[]) value);
+            }
             return value;
         } catch (Exception ignore) {
             return null;
         }
     }
-
-    // Extract inner table record schema from the envelope (tries beforeImage, then afterImage)
-    private Schema extractTableRecordSchema(Schema envelopeSchema) {
-        if (envelopeSchema == null) {
-            return null;
-        }
-        System.out.println(">>> [KcopHandler] Extracting table record schema from envelope: " + envelopeSchema.getFullName());
-        Schema.Field before = envelopeSchema.getField("beforeImage");
-        if (before != null) {
-            Schema s = before.schema();
-            if (s.getType() == Type.UNION) {
-                for (Schema t : s.getTypes()) {
-                    if (t.getType() == Type.RECORD) {
-                        return t;
-                    }
-                }
-            } else if (s.getType() == Type.RECORD) {
-                return s;
-            }
-        }
-        Schema.Field after = envelopeSchema.getField("afterImage");
-        if (after != null) {
-            Schema s = after.schema();
-            if (s.getType() == Type.UNION) {
-                for (Schema t : s.getTypes()) {
-                    if (t.getType() == Type.RECORD) {
-                        return t;
-                    }
-                }
-            } else if (s.getType() == Type.RECORD) {
-                return s;
-            }
-        }
-        return null;
-    }
-
-    private Schema cloneRecordWithCharLengths(Schema record, TableMetaData tmd) {
-        SchemaBuilder.FieldAssembler<Schema> fa = SchemaBuilder
-                .record(record.getName())
-                .namespace(record.getNamespace())
-                .fields();
-
-        for (Schema.Field f : record.getFields()) {
-            Schema fs = f.schema();
-
-            // se for UNION (null + tipo), trate o “tipo real”
-            Schema effective = fs;
-            if (fs.getType() == Schema.Type.UNION) {
-                effective = fs.getTypes().stream()
-                        .filter(s -> s.getType() != Schema.Type.NULL)
-                        .findFirst().orElse(fs);
-            }
-
-            Schema newEffective = effective;
-
-            String logical = effective.getProp("logicalType");
-
-            if (effective.getType() == Schema.Type.STRING
-                    && "CHARACTER".equalsIgnoreCase(logical)) {
-
-                ColumnMetaData col = findColumnByName(tmd, f.name());
-
-                int byteLen = 255;
-                int charLen = 255;
-                if (col != null) {
-                    try {
-                        Method m = col.getClass().getMethod("getColumnLength");
-                        Object v = m.invoke(col);
-                        if (v instanceof Number && ((Number) v).intValue() > 0) {
-                            byteLen = ((Number) v).intValue();
-
-                            // 🔥 heurística UTF-8 (3 bytes por char)
-                            if (byteLen % 3 == 0) {
-                                charLen = byteLen / 3;
-                            } else {
-                                charLen = byteLen; // fallback defensivo
-                            }
-                        }
-                    } catch (Exception ignore) {
-                    }
-                }
-
-                Schema s2 = Schema.create(Schema.Type.STRING);
-
-                // copia tudo MENOS length antigo
-                copySchemaPropsExcept(effective, s2, "length");
-
-                s2.addProp("length", String.valueOf(charLen));
-
-                newEffective = s2;
-            }
-
-            Schema newFieldSchema = fs;
-            if (fs.getType() == Schema.Type.UNION) {
-                newFieldSchema = replaceNonNullInUnion(fs, newEffective);
-            } else {
-                newFieldSchema = newEffective;
-            }
-
-            Schema.Field nf = new Schema.Field(f.name(), newFieldSchema, f.doc(), f.defaultVal());
-            copyProps(f, nf);
-            fa = fa.name(nf.name()).type(nf.schema()).withDefault(nf.defaultVal());
-        }
-
-        Schema out = fa.endRecord();
-        copyRecordProps(record, out);
-        return out;
-    }
-
-    private void copySchemaPropsExcept(Schema from, Schema to, String... excluded) {
-        if (from == null || to == null) {
-            return;
-        }
-
-        java.util.Set<String> ex = new java.util.HashSet<>(java.util.Arrays.asList(excluded));
-
-        for (Map.Entry<String, Object> e : from.getObjectProps().entrySet()) {
-            if (e.getKey() == null) {
-                continue;
-            }
-            if (ex.contains(e.getKey())) {
-                continue;
-            }
-            if (e.getValue() != null) {
-                to.addProp(e.getKey(), String.valueOf(e.getValue()));
-            }
-        }
-    }
-
-    private void copySchemaProps(Schema from, Schema to) {
-        if (from == null || to == null) {
-            return;
-        }
-        for (Map.Entry<String, Object> e : from.getObjectProps().entrySet()) {
-            if (e.getValue() != null) {
-                to.addProp(e.getKey(), String.valueOf(e.getValue()));
-            }
-        }
-    }
-
-    private void copyProps(Schema.Field from, Schema.Field to) {
-        for (Map.Entry<String, Object> e : from.getObjectProps().entrySet()) {
-            if (e.getValue() != null) {
-                to.addProp(e.getKey(), String.valueOf(e.getValue()));
-            }
-        }
-    }
-
-    private void copyRecordProps(Schema from, Schema to) {
-        copySchemaProps(from, to);
-    }
-
-    private Schema replaceNonNullInUnion(Schema union, Schema newNonNull) {
-        java.util.List<Schema> types = new java.util.ArrayList<>();
-        for (Schema s : union.getTypes()) {
-            if (s.getType() == Schema.Type.NULL) {
-                types.add(s);
-            } else {
-                types.add(newNonNull);
-            }
-        }
-        return Schema.createUnion(types);
-    }
-
-    private Schema rebuildEnvelopeWithClonedTableSchema(Schema envelope, TableMetaData tmd) {
-        if (envelope == null || tmd == null) {
-            return envelope;
-        }
-
-        Schema tableRecord = extractTableRecordSchema(envelope);
-        if (tableRecord == null) {
-            return envelope;
-        }
-
-        Schema clonedTable = cloneRecordWithCharLengths(tableRecord, tmd);
-
-        // agora recria o envelope record trocando o tipo dos campos beforeImage/afterImage
-        SchemaBuilder.FieldAssembler<Schema> fa = SchemaBuilder
-                .record(envelope.getName())
-                .namespace(envelope.getNamespace())
-                .fields();
-
-        for (Schema.Field f : envelope.getFields()) {
-            if ("beforeImage".equals(f.name()) || "afterImage".equals(f.name())) {
-                Schema newFieldSchema = replaceRecordInsideUnion(f.schema(), clonedTable);
-                Schema.Field nf = new Schema.Field(f.name(), newFieldSchema, f.doc(), f.defaultVal());
-                copyProps(f, nf);
-                fa = fa.name(nf.name()).type(nf.schema()).withDefault(nf.defaultVal());
-            } else {
-                Schema.Field nf = new Schema.Field(f.name(), f.schema(), f.doc(), f.defaultVal());
-                copyProps(f, nf);
-                fa = fa.name(nf.name()).type(nf.schema()).withDefault(nf.defaultVal());
-            }
-        }
-
-        Schema rebuilt = fa.endRecord();
-        copyRecordProps(envelope, rebuilt);
-        return rebuilt;
-    }
-
-    private Schema replaceRecordInsideUnion(Schema original, Schema newRecord) {
-        if (original.getType() != Schema.Type.UNION) {
-            return newRecord;
-        }
-        java.util.List<Schema> types = new java.util.ArrayList<>();
-        for (Schema s : original.getTypes()) {
-            if (s.getType() == Schema.Type.RECORD) {
-                types.add(newRecord);
-            } else {
-                types.add(s); // null, etc.
-
-            }
-        }
-        return Schema.createUnion(types);
-    }
-
+ 
     // Build RECORD key schema based on PK columns (or overrides or defaults)
     private Schema buildRecordKeySchema(String table, TableMetaData tableMetaData) {
         String shortName = table != null && table.contains(".")
@@ -751,7 +559,7 @@ public class KcopHandler extends AbstractHandler {
         if (overrideCols != null && overrideCols.length > 0) {
             System.out.println(">>> [KcopHandler] Using key columns override for " + tableUpper + ": " + Arrays.toString(overrideCols));
             for (String colName : overrideCols) {
-                ColumnMetaData col = findColumnByName(tableMetaData, colName);
+                ColumnMetaData col = schemaTypeConverter.findColumnByName(tableMetaData, colName);
                 Schema colSchema = Schema.create(Type.STRING);
                 // Heuristic: assign TIMESTAMP/DATE if name suggests
                 if (colName.toUpperCase().startsWith("DH_") || "DH_TRMT".equalsIgnoreCase(colName)) {
@@ -762,7 +570,7 @@ public class KcopHandler extends AbstractHandler {
                     colSchema.addProp("length", 10);
                 } else {
                     colSchema.addProp("logicalType", "CHARACTER");
-                    colSchema.addProp("length", col != null ? safeGetCharLength(col) : 255);
+                    colSchema.addProp("length", col != null ? charFormatHandler.safeGetCharLength(col) : 255);
                 }
                 colSchema.addProp("dbColumnName", col != null ? col.getColumnName() : colName);
                 fields.name(colName).type(colSchema).withDefault("");
@@ -777,7 +585,7 @@ public class KcopHandler extends AbstractHandler {
             for (Map.Entry<String, Integer> e : defaults.entrySet()) {
                 String colName = e.getKey();
                 int len = e.getValue() != null ? e.getValue() : 255;
-                ColumnMetaData col = findColumnByName(tableMetaData, colName);
+                ColumnMetaData col = schemaTypeConverter.findColumnByName(tableMetaData, colName);
                 Schema colSchema = Schema.create(Type.STRING);
                 // Heuristic: assign TIMESTAMP/DATE if name suggests
                 if (colName.toUpperCase().startsWith("DH_") || "DH_TRMT".equalsIgnoreCase(colName)) {
@@ -836,7 +644,7 @@ public class KcopHandler extends AbstractHandler {
                 } else {
                     colSchema = Schema.create(Type.STRING);
                     colSchema.addProp("logicalType", "CHARACTER");
-                    colSchema.addProp("length", safeGetCharLength(col));
+                    colSchema.addProp("length", charFormatHandler.safeGetCharLength(col));
                 }
                 colSchema.addProp("dbColumnName", colName);
                 selected.put(colName, colSchema);
@@ -851,92 +659,6 @@ public class KcopHandler extends AbstractHandler {
         return fields.endRecord();
     }
 
-    // Find a column by name (case-insensitive)
-    private ColumnMetaData findColumnByName(TableMetaData tmd, String name) {
-        if (tmd == null || name == null) {
-            return null;
-        }
-        String target = name.toUpperCase();
-        for (int i = 0; i < tmd.getNumColumns(); i++) {
-            ColumnMetaData col = tmd.getColumnMetaData(i);
-            if (col != null && target.equals(col.getColumnName().toUpperCase())) {
-                return col;
-            }
-        }
-        return null;
-    }
-
-    private int safeGetCharLength(ColumnMetaData col) {
-        if (col == null) {
-            return 255;
-        }
-
-        String colName = null;
-        try {
-            colName = col.getColumnName();
-        } catch (Exception ignore) {
-        }
-        String key = (colName == null ? "UNKNOWN" : colName);
-
-        // loga 1x por coluna
-        if (loggedLenCols.add(key)) {
-            System.out.println(">>> [LEN-DEBUG] column=" + key
-                    + " class=" + col.getClass().getName()
-                    + " dataType=" + (col.getDataType() != null ? col.getDataType().toString() : "null"));
-
-            String[] probes = new String[]{
-                "getLength", "getCharLength", "getColumnLength", "getDataLength",
-                "getBinaryLength", "getDisplaySize", "getPrecision", "getScale"
-            };
-
-            for (String mName : probes) {
-                try {
-                    Method m = col.getClass().getMethod(mName);
-                    Object v = m.invoke(col);
-                    System.out.println(">>> [LEN-DEBUG] " + key + "." + mName + "=" + v);
-                } catch (Exception e) {
-                    System.out.println(">>> [LEN-DEBUG] " + key + "." + mName + " (n/a)");
-                }
-            }
-        }
-
-        // tentativa “boa” de char-length
-        String[] candidates = new String[]{"getCharLength", "getColumnLength", "getLength"};
-        for (String mName : candidates) {
-            try {
-                Method m = col.getClass().getMethod(mName);
-                Object v = m.invoke(col);
-                if (v instanceof Number) {
-                    int len = ((Number) v).intValue();
-                    if (len > 0) {
-                        return len;
-                    }
-                }
-            } catch (Exception ignore) {
-            }
-        }
-
-        // fallback: parse do dataType (se vier algo tipo VARCHAR2(4 CHAR))
-        try {
-            String dt = col.getDataType() != null ? col.getDataType().toString() : null;
-            if (dt != null) {
-                int l = dt.indexOf('('), r = dt.indexOf(')');
-                if (l > 0 && r > l) {
-                    String inside = dt.substring(l + 1, r).trim();
-                    if (inside.contains(",")) {
-                        inside = inside.substring(0, inside.indexOf(','));
-                    }
-                    int parsed = Integer.parseInt(inside.replaceAll("[^0-9]", ""));
-                    if (parsed > 0) {
-                        return parsed;
-                    }
-                }
-            }
-        } catch (Exception ignore) {
-        }
-
-        return 255;
-    }
 
     // Build GenericRecord key from afterImage/beforeImage record inside the envelope
     private String buildKeyString(String table, Schema keySchema, GenericRecord envelopeRecord) {
@@ -954,7 +676,8 @@ public class KcopHandler extends AbstractHandler {
                 if (l != null) {
                     len = Integer.parseInt(l);
                 }
-            } catch (Exception ignore) { }
+            } catch (Exception ignore) {
+            }
             if (len > 0 && s.length() < len) {
                 sb.append("0".repeat(len - s.length()));
             }
@@ -965,20 +688,36 @@ public class KcopHandler extends AbstractHandler {
 
     // Helper: select the inner table image record
     private GenericRecord getTableImageRecord(GenericRecord envelopeRecord) {
-        if (envelopeRecord == null) return null;
+        if (envelopeRecord == null) {
+            return null;
+        }
         Object after = null, before = null;
-        try { after = envelopeRecord.get("afterImage"); } catch (Exception ignore) { }
-        try { before = envelopeRecord.get("beforeImage"); } catch (Exception ignore) { }
-        if (after instanceof GenericRecord) return (GenericRecord) after;
-        if (before instanceof GenericRecord) return (GenericRecord) before;
+        try {
+            after = envelopeRecord.get("afterImage");
+        } catch (Exception ignore) {
+        }
+        try {
+            before = envelopeRecord.get("beforeImage");
+        } catch (Exception ignore) {
+        }
+        if (after instanceof GenericRecord) {
+            return (GenericRecord) after;
+        }
+        if (before instanceof GenericRecord) {
+            return (GenericRecord) before;
+        }
         return null;
     }
 
     // Helper: safely read a field from a record (avoid AvroRuntimeException)
     private Object safeGetFromRecord(GenericRecord record, String fieldName) {
-        if (record == null || fieldName == null) return null;
+        if (record == null || fieldName == null) {
+            return null;
+        }
         try {
-            if (record.getSchema().getField(fieldName) == null) return null;
+            if (record.getSchema().getField(fieldName) == null) {
+                return null;
+            }
             return record.get(fieldName);
         } catch (Exception ignore) {
             return null;
