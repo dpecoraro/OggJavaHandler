@@ -103,11 +103,11 @@ public class KcopHandler extends AbstractHandler {
                 throw new NoSuchAttributeException("lack of kafka producer config file");
             }
             // Read topic template and bootstrap
-            this.topicMappingTemplate = kafkaProps.getProperty("gg.handler.kafkahandler.topicMappingTemplate");
+            this.topicMappingTemplate = kafkaProps.getProperty("gg.handler.kcoph.topicMappingTemplate");
             this.kafkaBootstrapServers = kafkaProps.getProperty(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
 
             // Namespace prefix and schema manager
-            String namespacePrefix = kafkaProps.getProperty("gg.handler.kafkahandler.namespacePrefix", "value.SOURCEDB.BALP");
+            String namespacePrefix = kafkaProps.getProperty("gg.handler.kcoph.namespacePrefix", "value.SOURCEDB.BALP");
             this.schemaTypeConverter = new SchemaTypeConverter();
             this.schemaManager = new AvroSchemaManager(namespacePrefix, schemaTypeConverter);
 
@@ -130,7 +130,7 @@ public class KcopHandler extends AbstractHandler {
             kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "io.confluent.kafka.serializers.KafkaAvroSerializer");
 
             for (String propName : kafkaProps.stringPropertyNames()) {
-                if (propName.startsWith("gg.handler.kafkahandler.keyColumns.")) {
+                if (propName.startsWith("gg.handler.kcoph.keyColumns.")) {
                     String tableCode = propName.substring(propName.lastIndexOf('.') + 1).toUpperCase();
                     String raw = kafkaProps.getProperty(propName, "");
                     String[] cols = Arrays.stream(raw.split(","))
