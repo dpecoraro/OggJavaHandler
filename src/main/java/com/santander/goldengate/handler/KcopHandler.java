@@ -195,10 +195,10 @@ public class KcopHandler extends AbstractHandler {
             return;
         }
 
-        final String table = operation.getTableName() != null ? operation.getTableName().toString() : "UNKNOWN";
+        String table = operation.getTableName() != null ? operation.getTableName().toString() : "UNKNOWN";
 
         EntityTypeFormatHandler enttypHandler = new EntityTypeFormatHandler();
-        final String opType = enttypHandler.mapEntTyp(operation);
+        String opType = enttypHandler.mapEntTyp(operation);
 
         TableMetaData tableMetaData = (metaData != null && operation.getTableName() != null)
                 ? metaData.getTableMetaData(operation.getTableName())
@@ -234,9 +234,11 @@ public class KcopHandler extends AbstractHandler {
             GenericRecord cdcRecord = new GenericData.Record(avroSchemaFixed);
             System.out.println(">>> [KcopHandler] Created CDC GenericRecord " + cdcRecord.getSchema());
             if (!beforeImage.isEmpty()) {
+                System.out.println("Creating beforeRec");
                 GenericRecord beforeRec = createTableRecord(avroSchemaFixed, "beforeImage", beforeImage);
                 cdcRecord.put("beforeImage", beforeRec);
             } else {
+                System.out.println("beforeImage does not exist, setting variable to null");
                 cdcRecord.put("beforeImage", null);
             }
             if (!afterImage.isEmpty()) {
@@ -250,17 +252,20 @@ public class KcopHandler extends AbstractHandler {
             cdcRecord.put("A_CCID", tx.getTranID() != null ? tx.getTranID().toString() : null);
             // Use event/operation timestamp with space separator and 12 fractional digits
             cdcRecord.put("A_TIMSTAMP", dateFormatHandler.formatMillisSpace12(extractOperationTimestampMillis(event, tx, operation))); // changed
+            
             //String ggUser = extractUser(event, tx, operation);
-            // Fallback to system user if missing
-            //String sysUser = System.getProperty("user.name", "unknown");
             //cdcRecord.put("A_JOBUSER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser); // changed
             //cdcRecord.put("A_USER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser);    // changed
 
             // Build topic
+            System.out.println(">>> [KcopHandler] Building topic");
             String topic = resolveTopic(topicMappingTemplate, table);
+            
 
             // Build Avro key schema (RECORD) and key GenericRecord from PK columns
+            System.out.println(">>> [KcopHandler] Building KeySchema");
             Schema keySchema = buildRecordKeySchema(table, tableMetaData);
+            System.out.println(">>> [KcopHandler] Building KeyString");
             String keyRecord = buildKeyString(table, keySchema, cdcRecord);
 
             // Log control fields and key
@@ -571,7 +576,6 @@ public class KcopHandler extends AbstractHandler {
             for (String colName : overrideCols) {
                 ColumnMetaData col = schemaTypeConverter.findColumnByName(tableMetaData, colName);
                 Schema colSchema = Schema.create(Type.STRING);
-                // Heuristic: assign TIMESTAMP/DATE if name suggests
                 if (colName.toUpperCase().startsWith("DH_") || "DH_TRMT".equalsIgnoreCase(colName)) {
                     colSchema.addProp("logicalType", "TIMESTAMP");
                     colSchema.addProp("length", 32);
@@ -773,7 +777,7 @@ public class KcopHandler extends AbstractHandler {
 
     // Resolve topic from template; fallback keeps previous behavior if template is missing
     protected String resolveTopic(String template, String fullyQualifiedTableName) {
-        final String normalized = normalizeTopicTemplate(template);
+        String normalized = normalizeTopicTemplate(template);
         System.out.println(">>> [KcopHandler] Resolving topic for table " + fullyQualifiedTableName + " using template: " + normalized);
         if (normalized == null || normalized.isEmpty()) {
             System.out.println(">>> [KcopHandler] No topic template provided, using default topic naming: " + "cdc." + fullyQualifiedTableName.toLowerCase().replace(".", "_"));
