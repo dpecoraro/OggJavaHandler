@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="com.santander.goldengate.handler.AvroSchemaManagerTest" time="0.097" tests="3" errors="0" skipped="0" failures="0">
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="com.santander.goldengate.handler.AvroSchemaManagerTest" time="0.096" tests="3" errors="0" skipped="0" failures="0">
   <properties>
     <property name="java.specification.version" value="17"/>
     <property name="sun.jnu.encoding" value="UTF-8"/>
@@ -13,7 +13,7 @@
     <property name="sun.java.launcher" value="SUN_STANDARD"/>
     <property name="user.country" value="BR"/>
     <property name="sun.boot.library.path" value="/Users/dpecoraro/.sdkman/candidates/java/17.0.9-graalce/lib"/>
-    <property name="sun.java.command" value="/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/surefire/surefirebooter-20260102160402785_3.jar /Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/surefire 2026-01-02T16-04-02_735-jvmRun1 surefire-20260102160402785_1tmp surefire_0-20260102160402785_2tmp"/>
+    <property name="sun.java.command" value="/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/surefire/surefirebooter-20260102162052154_3.jar /Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/surefire 2026-01-02T16-20-52_107-jvmRun1 surefire-20260102162052154_1tmp surefire_0-20260102162052154_2tmp"/>
     <property name="jdk.debug" value="release"/>
     <property name="surefire.test.class.path" value="/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/test-classes:/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/classes:/Users/dpecoraro/Downloads/ggjava.jar:/Users/dpecoraro/Downloads/ggdbutil-23.9.2.25.10.001.jar:/Users/dpecoraro/.m2/repository/commons-codec/commons-codec/1.15/commons-codec-1.15.jar:/Users/dpecoraro/.m2/repository/org/apache/avro/avro/1.11.3/avro-1.11.3.jar:/Users/dpecoraro/.m2/repository/com/fasterxml/jackson/core/jackson-core/2.14.2/jackson-core-2.14.2.jar:/Users/dpecoraro/.m2/repository/com/fasterxml/jackson/core/jackson-databind/2.14.2/jackson-databind-2.14.2.jar:/Users/dpecoraro/.m2/repository/com/fasterxml/jackson/core/jackson-annotations/2.14.2/jackson-annotations-2.14.2.jar:/Users/dpecoraro/.m2/repository/org/apache/commons/commons-compress/1.22/commons-compress-1.22.jar:/Users/dpecoraro/.m2/repository/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.jar:/Users/dpecoraro/.m2/repository/org/apache/kafka/kafka-clients/3.6.0/kafka-clients-3.6.0.jar:/Users/dpecoraro/.m2/repository/com/github/luben/zstd-jni/1.5.5-1/zstd-jni-1.5.5-1.jar:/Users/dpecoraro/.m2/repository/org/lz4/lz4-java/1.8.0/lz4-java-1.8.0.jar:/Users/dpecoraro/.m2/repository/org/xerial/snappy/snappy-java/1.1.10.4/snappy-java-1.1.10.4.jar:/Users/dpecoraro/.m2/repository/io/confluent/kafka-avro-serializer/7.6.0/kafka-avro-serializer-7.6.0.jar:/Users/dpecoraro/.m2/repository/io/confluent/kafka-schema-serializer/7.6.0/kafka-schema-serializer-7.6.0.jar:/Users/dpecoraro/.m2/repository/com/fasterxml/jackson/dataformat/jackson-dataformat-csv/2.14.2/jackson-dataformat-csv-2.14.2.jar:/Users/dpecoraro/.m2/repository/io/confluent/kafka-schema-registry-client/7.6.0/kafka-schema-registry-client-7.6.0.jar:/Users/dpecoraro/.m2/repository/org/yaml/snakeyaml/2.0/snakeyaml-2.0.jar:/Users/dpecoraro/.m2/repository/io/swagger/core/v3/swagger-annotations/2.1.10/swagger-annotations-2.1.10.jar:/Users/dpecoraro/.m2/repository/com/google/guava/guava/32.0.1-jre/guava-32.0.1-jre.jar:/Users/dpecoraro/.m2/repository/com/google/guava/failureaccess/1.0.1/failureaccess-1.0.1.jar:/Users/dpecoraro/.m2/repository/com/google/guava/listenablefuture/9999.0-empty-to-avoid-conflict-with-guava/listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar:/Users/dpecoraro/.m2/repository/com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2.jar:/Users/dpecoraro/.m2/repository/org/checkerframework/checker-qual/3.33.0/checker-qual-3.33.0.jar:/Users/dpecoraro/.m2/repository/com/google/errorprone/error_prone_annotations/2.18.0/error_prone_annotations-2.18.0.jar:/Users/dpecoraro/.m2/repository/com/google/j2objc/j2objc-annotations/2.8/j2objc-annotations-2.8.jar:/Users/dpecoraro/.m2/repository/io/confluent/logredactor/1.0.12/logredactor-1.0.12.jar:/Users/dpecoraro/.m2/repository/com/google/re2j/re2j/1.6/re2j-1.6.jar:/Users/dpecoraro/.m2/repository/io/confluent/logredactor-metrics/1.0.12/logredactor-metrics-1.0.12.jar:/Users/dpecoraro/.m2/repository/com/eclipsesource/minimal-json/minimal-json/0.9.5/minimal-json-0.9.5.jar:/Users/dpecoraro/.m2/repository/io/confluent/common-utils/7.6.0/common-utils-7.6.0.jar:/Users/dpecoraro/.m2/repository/org/junit/jupiter/junit-jupiter-api/5.10.1/junit-jupiter-api-5.10.1.jar:/Users/dpecoraro/.m2/repository/org/opentest4j/opentest4j/1.3.0/opentest4j-1.3.0.jar:/Users/dpecoraro/.m2/repository/org/junit/platform/junit-platform-commons/1.10.1/junit-platform-commons-1.10.1.jar:/Users/dpecoraro/.m2/repository/org/apiguardian/apiguardian-api/1.1.2/apiguardian-api-1.1.2.jar:/Users/dpecoraro/.m2/repository/org/junit/jupiter/junit-jupiter-engine/5.10.1/junit-jupiter-engine-5.10.1.jar:/Users/dpecoraro/.m2/repository/org/junit/platform/junit-platform-engine/1.10.1/junit-platform-engine-1.10.1.jar:/Users/dpecoraro/.m2/repository/org/mockito/mockito-core/5.12.0/mockito-core-5.12.0.jar:/Users/dpecoraro/.m2/repository/net/bytebuddy/byte-buddy/1.14.15/byte-buddy-1.14.15.jar:/Users/dpecoraro/.m2/repository/net/bytebuddy/byte-buddy-agent/1.14.15/byte-buddy-agent-1.14.15.jar:/Users/dpecoraro/.m2/repository/org/objenesis/objenesis/3.3/objenesis-3.3.jar:"/>
     <property name="sun.cpu.endian" value="little"/>
@@ -30,7 +30,7 @@
     <property name="java.vm.specification.vendor" value="Oracle Corporation"/>
     <property name="java.specification.name" value="Java Platform API Specification"/>
     <property name="apple.awt.application.name" value="ForkedBooter"/>
-    <property name="surefire.real.class.path" value="/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/surefire/surefirebooter-20260102160402785_3.jar"/>
+    <property name="surefire.real.class.path" value="/Users/dpecoraro/apps/Santander/golden-gate-kcop-handler/target/surefire/surefirebooter-20260102162052154_3.jar"/>
     <property name="sun.management.compiler" value="HotSpot 64-Bit Tiered Compilers"/>
     <property name="java.runtime.version" value="17.0.9+9-jvmci-23.0-b22"/>
     <property name="user.name" value="dpecoraro"/>
@@ -55,12 +55,12 @@
     <property name="sun.io.unicode.encoding" value="UnicodeBig"/>
     <property name="java.class.version" value="61.0"/>
   </properties>
-  <testcase name="testSerializeAvroNotEmpty" classname="com.santander.goldengate.handler.AvroSchemaManagerTest" time="0.083">
+  <testcase name="testSerializeAvroNotEmpty" classname="com.santander.goldengate.handler.AvroSchemaManagerTest" time="0.077">
     <system-err><![CDATA[SLF4J: Failed to load class "org.slf4j.impl.StaticLoggerBinder".
 SLF4J: Defaulting to no-operation (NOP) logger implementation
 SLF4J: See http://www.slf4j.org/codes.html#StaticLoggerBinder for further details.
 ]]></system-err>
   </testcase>
   <testcase name="testComputeNamespaceAndEnvelope" classname="com.santander.goldengate.handler.AvroSchemaManagerTest" time="0.001"/>
-  <testcase name="testSchemaCaching" classname="com.santander.goldengate.handler.AvroSchemaManagerTest" time="0.0"/>
+  <testcase name="testSchemaCaching" classname="com.santander.goldengate.handler.AvroSchemaManagerTest" time="0.001"/>
 </testsuite>
