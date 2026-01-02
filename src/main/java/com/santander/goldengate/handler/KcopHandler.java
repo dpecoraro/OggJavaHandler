@@ -140,7 +140,7 @@ public class KcopHandler extends AbstractHandler {
             kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "io.confluent.kafka.serializers.KafkaAvroSerializer");
 
             for (String propName : kafkaProps.stringPropertyNames()) {
-                if (propName.startsWith("gg.handler.kcoph.keyColumns.")) {
+                if (propName.startsWith("gg.handler.kafkahandler.keyColumns")) {
                     String tableCode = propName.substring(propName.lastIndexOf('.') + 1).toUpperCase();
                     String raw = kafkaProps.getProperty(propName, "");
                     String[] cols = Arrays.stream(raw.split(","))
@@ -152,6 +152,7 @@ public class KcopHandler extends AbstractHandler {
                         System.out.println(">>> [KcopHandler] Key columns override loaded for " + tableCode + ": " + Arrays.toString(cols));
                     }
                 }
+                System.out.println(">>> [KcopHandler] Key columns override keys: " + keyColumnsOverrides.keySet());
             }
 
             kafkaProducer = new KafkaProducer<>(kafkaProps);
@@ -568,7 +569,7 @@ public class KcopHandler extends AbstractHandler {
                 .namespace("key.SOURCEDB.BALP")
                 .fields();
         // 1) Property override takes precedence
-        System.out.println(">>> [KcopHandler] Checking key columns override for " + tableUpper);
+        System.out.println(">>> [KcopHandler] Checking key columns override for precedence for " + keyColumnsOverrides.keySet());
         String[] overrideCols = keyColumnsOverrides.get(tableUpper);
        try {
         if (overrideCols != null && overrideCols.length > 0) {
