@@ -276,8 +276,8 @@ public class KcopHandler extends AbstractHandler {
 
             // Register schemas once per topic (value and key) — RECORD key
             if (lastRegisteredTopic == null || !lastRegisteredTopic.equals(topic)) {
-                String valueSubject = topic + "_v2-value";
-                String keySubject = topic + "_v2-key";
+                String valueSubject = topic + "-value";
+                String keySubject = topic + "-key";
 
                 System.out.println(">>> [KcopHandler] Registering value schema:"
                         + " subject=" + valueSubject
