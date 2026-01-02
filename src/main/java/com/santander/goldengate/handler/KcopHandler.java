@@ -557,14 +557,15 @@ public class KcopHandler extends AbstractHandler {
         String shortName = table != null && table.contains(".")
                 ? table.substring(table.lastIndexOf('.') + 1)
                 : table;
-        String recordNameLower = shortName != null ? shortName.toLowerCase() : "table"; // force lower-case
+        String recordNameLower = shortName != null ? shortName.toLowerCase() : "table"; 
+         System.out.println("Solved shortName: " + shortName + ", recordNameLower: " + recordNameLower);
         String tableUpper = shortName != null ? shortName.toUpperCase() : "TABLE";
-
+        System.out.println("Solved tableUpper: " + tableUpper + ", recordNameLower: " + recordNameLower);
         SchemaBuilder.FieldAssembler<Schema> fields = SchemaBuilder
                 .record(recordNameLower) // lower-case to match SR subjects
                 .namespace("key.SOURCEDB.BALP")
                 .fields();
-
+        System.out.println(">>> [KcopHandler] Initialized SchemaBuilder for key schema");
         // 1) Property override takes precedence
         String[] overrideCols = keyColumnsOverrides.get(tableUpper);
         if (overrideCols != null && overrideCols.length > 0) {
