@@ -60,6 +60,8 @@ public class KcopHandler extends AbstractHandler {
     private KafkaProducer<String, GenericRecord> kafkaProducer; // key via Avro serializer to auto-register in SR
     private String topicMappingTemplate;
     private String kafkaBootstrapServers;
+    private String namespacePrefix;
+
     private SchemaRegistryClient schemaRegistryClient;
     private DateFormatHandler dateFormatHandler = new DateFormatHandler();
 
@@ -85,6 +87,16 @@ public class KcopHandler extends AbstractHandler {
         System.out.println(">>> [KcopHandler] kafkaProducerConfigFile set to " + kafkaProducerConfigFile);
     }
 
+    public void setTopicMappingTemplate(String topicMappingTemplate) {
+        this.topicMappingTemplate = topicMappingTemplate;
+        System.out.println(">>> [KcopHandler] topicMappingTemplate set to " + topicMappingTemplate);
+    }
+
+    public void setNameSpacePrefix(String namespacePrefix) {
+        this.namespacePrefix = namespacePrefix;
+        System.out.println(">>> [KcopHandler] namespacePrefix set to " + namespacePrefix);
+    }
+    
     @Override
     public void init(DsConfiguration config, DsMetaData metaData) {
         System.out.println(">>> [KcopHandler] init() called");
@@ -103,11 +115,12 @@ public class KcopHandler extends AbstractHandler {
                 throw new NoSuchAttributeException("lack of kafka producer config file");
             }
             // Read topic template and bootstrap
-            this.topicMappingTemplate = kafkaProps.getProperty("gg.handler.kcoph.topicMappingTemplate");
+            //this.topicMappingTemplate = kafkaProps.getProperty("gg.handler.kcoph.topicMappingTemplate");
             this.kafkaBootstrapServers = kafkaProps.getProperty(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
 
             // Namespace prefix and schema manager
-            String namespacePrefix = kafkaProps.getProperty("gg.handler.kcoph.namespacePrefix", "value.SOURCEDB.BALP");
+            //String namespacePrefix = kafkaProps.getProperty("gg.handler.kcoph.namespacePrefix", "value.SOURCEDB.BALP");
+            
             this.schemaTypeConverter = new SchemaTypeConverter();
             this.schemaManager = new AvroSchemaManager(namespacePrefix, schemaTypeConverter);
 
