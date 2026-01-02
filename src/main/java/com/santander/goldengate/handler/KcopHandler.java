@@ -71,12 +71,12 @@ public class KcopHandler extends AbstractHandler {
 
     public KcopHandler() {
         System.out.println(">>> [KcopHandler] Constructor called");
-        LinkedHashMap<String, Integer> aedt074 = new LinkedHashMap<>();
-        aedt074.put("CD_BANC", 4);
-        aedt074.put("CD_CENT_CPTU", 4);
-        aedt074.put("AN_PROP", 4);
-        aedt074.put("NR_SOLI", 8);
-        defaultKeyColumnSpecs.put("AEDT074", aedt074);
+        LinkedHashMap<String, Integer> table = new LinkedHashMap<>();
+        table.put("CD_BANC", 4);
+        table.put("CD_CENT_CPTU", 4);
+        table.put("AN_PROP", 4);
+        table.put("NR_SOLI", 8);
+        defaultKeyColumnSpecs.put("default", table);
     }
 
     public void setKafkaProducerConfigFile(String kafkaProducerConfigFile) {
@@ -589,6 +589,7 @@ public class KcopHandler extends AbstractHandler {
         }
 
         // 2) Default spec per table (fixed lengths)
+
         LinkedHashMap<String, Integer> defaults = defaultKeyColumnSpecs.get(tableUpper);
         if (defaults != null && !defaults.isEmpty()) {
             System.out.println(">>> [KcopHandler] Using default key spec for " + tableUpper + ": " + defaults.keySet());
@@ -783,27 +784,41 @@ public class KcopHandler extends AbstractHandler {
         System.out.println(">>> [KcopHandler] Parsing fully qualified table name: " + fqn);
         if (fqn.contains(".")) {
             table = fqn.substring(fqn.lastIndexOf('.') + 1);
+            System.out.println(">>> [KcopHandler] Extracted table name: " + table);
             String prefix = fqn.substring(0, fqn.lastIndexOf('.'));
+            System.out.println(">>> [KcopHandler] Extracted prefix: " + prefix);
             if (prefix.contains(".")) {
                 schema = prefix.substring(prefix.lastIndexOf('.') + 1);
+                System.out.println(">>> [KcopHandler] Extracted schema name: " + schema);
                 catalog = prefix.substring(0, prefix.lastIndexOf('.'));
+                System.out.println(">>> [KcopHandler] Extracted catalog name: " + catalog);
             } else {
+                System.out.println(">>> [KcopHandler] No catalog part found, using prefix as schema: " + prefix);
                 schema = prefix;
             }
-        }
+        }   
+        System.out.println(">>> [KcopHandler] Final parsed names - catalog: " + catalog + ", schema: " + schema + ", table: " + table);
 
         Map<String, String> vars = new HashMap<>();
         // Primary token
         vars.put("fullyQualifiedTableName", fqn);
+        System.out.println(">>> [KcopHandler] Set variable fullyQualifiedTableName = " + fqn);
         // Common alias users try
         vars.put("fullyQualifiedName", fqn);
+        System.out.println(">>> [KcopHandler] Set variable fullyQualifiedName = " + fqn);
         // Convenience tokens
         vars.put("table", table);
+        System.out.println(">>> [KcopHandler] Set variable table = " + table);
         vars.put("tableName", table);
+        System.out.println(">>> [KcopHandler] Set variable tableName = " + table);
         vars.put("schema", schema);
+        System.out.println(">>> [KcopHandler] Set variable schema = " + schema);
         vars.put("schemaName", schema);
+        System.out.println(">>> [KcopHandler] Set variable schemaName = " + schema);
         vars.put("catalog", catalog);
+        System.out.println(">>> [KcopHandler] Set variable catalog = " + catalog);
         vars.put("catalogName", catalog);
+        System.out.println(">>> [KcopHandler] Set variable catalogName = " + catalog);
 
         return substitutePlaceholders(normalized, vars);
     }
@@ -827,6 +842,7 @@ public class KcopHandler extends AbstractHandler {
     // Simple ${var} substitution; unknown vars are left untouched.
     private String substitutePlaceholders(String template, Map<String, String> vars) {
         if (template == null || template.isEmpty() || vars == null || vars.isEmpty()) {
+            System.out.println(">>> [KcopHandler] No substitution needed for template: " + template);
             return template;
         }
 
@@ -843,6 +859,7 @@ public class KcopHandler extends AbstractHandler {
             }
         }
         m.appendTail(sb);
+        System.out.println(">>> [KcopHandler] Substituted template: " + sb.toString());
         return sb.toString();
     }
 

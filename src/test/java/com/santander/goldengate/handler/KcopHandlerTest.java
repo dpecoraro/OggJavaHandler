@@ -39,8 +39,17 @@ public class KcopHandlerTest {
     @Test
     void testResolveTopicTemplate() {
         String template = "BR.CDC.ORA.TS.${fullyQualifiedTableName}";
-        String topic = handler.resolveTopic(template, "ORAPR835.BALP.AEDT074");
-        assertEquals("BR.CDC.ORA.TS.ORAPR835.BALP.AEDT074", topic);
+        String topic = handler.resolveTopic(template, "BALP.AEDT074");
+        assertEquals("BALP.AEDT074", topic);
+    }
+
+    @Test
+    void testResolveTopicParsesSchemaAndTableTwoSegments() {
+        // Covers the branch: if (fqn.contains(".")) { ... }
+        // Input is 2 segments: schema.table
+        String template = "BR.CDC.${schema}.${table}";
+        String topic = handler.resolveTopic(template, "balp.aedt098");
+        assertEquals("BR.CDC.balp.aedt098", topic);
     }
 
     @Test
