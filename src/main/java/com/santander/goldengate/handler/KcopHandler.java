@@ -257,7 +257,7 @@ public class KcopHandler extends AbstractHandler {
             //cdcRecord.put("A_USER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser);    // changed
 
             // Build topic
-            final String topic = resolveTopic(topicMappingTemplate, table);
+            String topic = resolveTopic(topicMappingTemplate, table);
 
             // Build Avro key schema (RECORD) and key GenericRecord from PK columns
             Schema keySchema = buildRecordKeySchema(table, tableMetaData);
@@ -553,6 +553,7 @@ public class KcopHandler extends AbstractHandler {
  
     // Build RECORD key schema based on PK columns (or overrides or defaults)
     private Schema buildRecordKeySchema(String table, TableMetaData tableMetaData) {
+        System.out.println(">>> [KcopHandler] Building RECORD key schema for table " + table);
         String shortName = table != null && table.contains(".")
                 ? table.substring(table.lastIndexOf('.') + 1)
                 : table;
@@ -782,16 +783,16 @@ public class KcopHandler extends AbstractHandler {
         String catalog = "";
 
         System.out.println(">>> [KcopHandler] Parsing fully qualified table name: " + fqn);
+        //aedt098
         if (fqn.contains(".")) {
             table = fqn.substring(fqn.lastIndexOf('.') + 1);
-            System.out.println(">>> [KcopHandler] Extracted table name: " + table);
+            //aedt098
             String prefix = fqn.substring(0, fqn.lastIndexOf('.'));
-            System.out.println(">>> [KcopHandler] Extracted prefix: " + prefix);
+            //balp
             if (prefix.contains(".")) {
                 schema = prefix.substring(prefix.lastIndexOf('.') + 1);
-                System.out.println(">>> [KcopHandler] Extracted schema name: " + schema);
+                //balp
                 catalog = prefix.substring(0, prefix.lastIndexOf('.'));
-                System.out.println(">>> [KcopHandler] Extracted catalog name: " + catalog);
             } else {
                 System.out.println(">>> [KcopHandler] No catalog part found, using prefix as schema: " + prefix);
                 schema = prefix;
@@ -800,25 +801,14 @@ public class KcopHandler extends AbstractHandler {
         System.out.println(">>> [KcopHandler] Final parsed names - catalog: " + catalog + ", schema: " + schema + ", table: " + table);
 
         Map<String, String> vars = new HashMap<>();
-        // Primary token
         vars.put("fullyQualifiedTableName", fqn);
-        System.out.println(">>> [KcopHandler] Set variable fullyQualifiedTableName = " + fqn);
-        // Common alias users try
         vars.put("fullyQualifiedName", fqn);
-        System.out.println(">>> [KcopHandler] Set variable fullyQualifiedName = " + fqn);
-        // Convenience tokens
         vars.put("table", table);
-        System.out.println(">>> [KcopHandler] Set variable table = " + table);
         vars.put("tableName", table);
-        System.out.println(">>> [KcopHandler] Set variable tableName = " + table);
         vars.put("schema", schema);
-        System.out.println(">>> [KcopHandler] Set variable schema = " + schema);
         vars.put("schemaName", schema);
-        System.out.println(">>> [KcopHandler] Set variable schemaName = " + schema);
         vars.put("catalog", catalog);
-        System.out.println(">>> [KcopHandler] Set variable catalog = " + catalog);
         vars.put("catalogName", catalog);
-        System.out.println(">>> [KcopHandler] Set variable catalogName = " + catalog);
 
         return substitutePlaceholders(normalized, vars);
     }
