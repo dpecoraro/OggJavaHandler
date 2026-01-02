@@ -9,14 +9,13 @@ import java.math.RoundingMode;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Base64;
-import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.naming.directory.NoSuchAttributeException;
 
@@ -69,8 +68,6 @@ public class KcopHandler extends AbstractHandler {
     private Map<String, String[]> keyColumnsOverrides = new HashMap<>();
     private CharFormatHandler charFormatHandler;
     private Map<String, LinkedHashMap<String, Integer>> defaultKeyColumnSpecs = new HashMap<>();
-
-    private final Set<String> loggedLenCols = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     public KcopHandler() {
         System.out.println(">>> [KcopHandler] Constructor called");
@@ -771,10 +768,82 @@ public class KcopHandler extends AbstractHandler {
 
     // Resolve topic from template; fallback keeps previous behavior if template is missing
     protected String resolveTopic(String template, String fullyQualifiedTableName) {
-        if (template == null || template.isEmpty()) {
+        final String normalized = normalizeTopicTemplate(template);
+        System.out.println(">>> [KcopHandler] Resolving topic for table " + fullyQualifiedTableName + " using template: " + normalized);
+        if (normalized == null || normalized.isEmpty()) {
+            System.out.println(">>> [KcopHandler] No topic template provided, using default topic naming: " + "cdc." + fullyQualifiedTableName.toLowerCase().replace(".", "_"));
             return "cdc." + fullyQualifiedTableName.toLowerCase().replace(".", "_");
         }
-        return template.replace("${fullyQualifiedTableName}", fullyQualifiedTableName);
+
+        String fqn = fullyQualifiedTableName != null ? fullyQualifiedTableName : "";
+        String table = fqn;
+        String schema = "";
+        String catalog = "";
+
+        System.out.println(">>> [KcopHandler] Parsing fully qualified table name: " + fqn);
+        if (fqn.contains(".")) {
+            table = fqn.substring(fqn.lastIndexOf('.') + 1);
+            String prefix = fqn.substring(0, fqn.lastIndexOf('.'));
+            if (prefix.contains(".")) {
+                schema = prefix.substring(prefix.lastIndexOf('.') + 1);
+                catalog = prefix.substring(0, prefix.lastIndexOf('.'));
+            } else {
+                schema = prefix;
+            }
+        }
+
+        Map<String, String> vars = new HashMap<>();
+        // Primary token
+        vars.put("fullyQualifiedTableName", fqn);
+        // Common alias users try
+        vars.put("fullyQualifiedName", fqn);
+        // Convenience tokens
+        vars.put("table", table);
+        vars.put("tableName", table);
+        vars.put("schema", schema);
+        vars.put("schemaName", schema);
+        vars.put("catalog", catalog);
+        vars.put("catalogName", catalog);
+
+        return substitutePlaceholders(normalized, vars);
+    }
+
+    // GoldenGate/Properties may escape '$' (e.g. \${var} or \u0024{var}); normalize before substitution.
+    private String normalizeTopicTemplate(String template) {
+        if (template == null) {
+            return null;
+        }
+        String t = template;
+        // Unescape a leading backslash before '${'
+        t = t.replace("\\${", "${");
+        // If '$' was written as unicode escape sequence in the properties file
+        t = t.replace("\\u0024{", "${");
+        t = t.replace("\\U0024{", "${");
+        return t;
+    }
+
+    private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\$\\{([^}]+)\\}");
+
+    // Simple ${var} substitution; unknown vars are left untouched.
+    private String substitutePlaceholders(String template, Map<String, String> vars) {
+        if (template == null || template.isEmpty() || vars == null || vars.isEmpty()) {
+            return template;
+        }
+
+        Matcher m = PLACEHOLDER_PATTERN.matcher(template);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String key = m.group(1) != null ? m.group(1).trim() : "";
+            String replacement = vars.get(key);
+            if (replacement == null) {
+                // leave placeholder as-is
+                m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
+            } else {
+                m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+            }
+        }
+        m.appendTail(sb);
+        return sb.toString();
     }
 
     // Safely obtain numeric scale from ColumnMetaData using reflection; returns -1 if unavailable
