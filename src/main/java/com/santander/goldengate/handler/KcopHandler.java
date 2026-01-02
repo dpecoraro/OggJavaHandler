@@ -553,21 +553,19 @@ public class KcopHandler extends AbstractHandler {
  
     // Build RECORD key schema based on PK columns (or overrides or defaults)
     private Schema buildRecordKeySchema(String table, TableMetaData tableMetaData) {
-        System.out.println(">>> [KcopHandler] Building RECORD key schema for table " + table);
         String shortName = table != null && table.contains(".")
                 ? table.substring(table.lastIndexOf('.') + 1)
                 : table;
         String recordNameLower = shortName != null ? shortName.toLowerCase() : "table"; 
-         System.out.println("Solved shortName: " + shortName + ", recordNameLower: " + recordNameLower);
         String tableUpper = shortName != null ? shortName.toUpperCase() : "TABLE";
-        System.out.println("Solved tableUpper: " + tableUpper + ", recordNameLower: " + recordNameLower);
         SchemaBuilder.FieldAssembler<Schema> fields = SchemaBuilder
                 .record(recordNameLower) // lower-case to match SR subjects
                 .namespace("key.SOURCEDB.BALP")
                 .fields();
-        System.out.println(">>> [KcopHandler] Initialized SchemaBuilder for key schema");
         // 1) Property override takes precedence
+        System.out.println(">>> [KcopHandler] Checking key columns override for " + tableUpper);
         String[] overrideCols = keyColumnsOverrides.get(tableUpper);
+       try {
         if (overrideCols != null && overrideCols.length > 0) {
             System.out.println(">>> [KcopHandler] Using key columns override for " + tableUpper + ": " + Arrays.toString(overrideCols));
             for (String colName : overrideCols) {
@@ -589,6 +587,10 @@ public class KcopHandler extends AbstractHandler {
             }
             return fields.endRecord();
         }
+       } catch (Exception e) {
+        System.err.println(">>> [KcopHandler] Error processing key columns override for " + tableUpper + ": " + e.getMessage());
+       }
+        
 
         // 2) Default spec per table (fixed lengths)
 
