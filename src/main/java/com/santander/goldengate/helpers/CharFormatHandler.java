@@ -2,6 +2,7 @@ package com.santander.goldengate.helpers;
 
 import java.lang.reflect.Method;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import oracle.goldengate.datasource.meta.ColumnMetaData;
 
@@ -11,6 +12,10 @@ public class CharFormatHandler {
 
     public CharFormatHandler(Set<String> loggedLenCols) {
         this.loggedLenCols = loggedLenCols;
+    }
+
+    public CharFormatHandler() {
+        this(ConcurrentHashMap.newKeySet());
     }
 
     public int safeGetCharLength(ColumnMetaData col) {

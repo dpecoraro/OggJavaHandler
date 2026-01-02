@@ -71,6 +71,7 @@ public class KcopHandler extends AbstractHandler {
 
     public KcopHandler() {
         System.out.println(">>> [KcopHandler] Constructor called");
+        this.charFormatHandler = new CharFormatHandler();
         LinkedHashMap<String, Integer> table = new LinkedHashMap<>();
         table.put("CD_BANC", 4);
         table.put("CD_CENT_CPTU", 4);
@@ -93,7 +94,7 @@ public class KcopHandler extends AbstractHandler {
         this.namespacePrefix = namespacePrefix;
         System.out.println(">>> [KcopHandler] namespacePrefix set to " + namespacePrefix);
     }
-    
+
     @Override
     public void init(DsConfiguration config, DsMetaData metaData) {
         System.out.println(">>> [KcopHandler] init() called");
@@ -117,7 +118,6 @@ public class KcopHandler extends AbstractHandler {
 
             // Namespace prefix and schema manager
             //String namespacePrefix = kafkaProps.getProperty("gg.handler.kcoph.namespacePrefix", "value.SOURCEDB.BALP");
-            
             this.schemaTypeConverter = new SchemaTypeConverter();
             this.schemaManager = new AvroSchemaManager(namespacePrefix, schemaTypeConverter);
 
@@ -253,15 +253,13 @@ public class KcopHandler extends AbstractHandler {
             cdcRecord.put("A_CCID", tx.getTranID() != null ? tx.getTranID().toString() : null);
             // Use event/operation timestamp with space separator and 12 fractional digits
             cdcRecord.put("A_TIMSTAMP", dateFormatHandler.formatMillisSpace12(extractOperationTimestampMillis(event, tx, operation))); // changed
-            
+
             //String ggUser = extractUser(event, tx, operation);
             //cdcRecord.put("A_JOBUSER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser); // changed
             //cdcRecord.put("A_USER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser);    // changed
-
             // Build topic
             System.out.println(">>> [KcopHandler] Building topic");
             String topic = resolveTopic(topicMappingTemplate, table);
-            
 
             // Build Avro key schema (RECORD) and key GenericRecord from PK columns
             System.out.println(">>> [KcopHandler] Building KeySchema");
@@ -441,15 +439,15 @@ public class KcopHandler extends AbstractHandler {
                 for (int i = 0; i < fracAndRest.length(); i++) {
                     char c = fracAndRest.charAt(i);
                     if (Character.isDigit(c)) {
-                        digits.append(c); 
-                    }else {
+                        digits.append(c);
+                    } else {
                         break;
                     }
                 }
                 String frac = digits.toString();
                 if (frac.length() > 12) {
-                    frac = frac.substring(0, 12); 
-                }else {
+                    frac = frac.substring(0, 12);
+                } else {
                     while (frac.length() < 12) {
                         frac += '0';
                     }
@@ -556,13 +554,13 @@ public class KcopHandler extends AbstractHandler {
             return null;
         }
     }
- 
+
     // Build RECORD key schema based on PK columns (or overrides or defaults)
     private Schema buildRecordKeySchema(String table, TableMetaData tableMetaData) {
         String shortName = table != null && table.contains(".")
                 ? table.substring(table.lastIndexOf('.') + 1)
                 : table;
-        String recordNameLower = shortName != null ? shortName.toLowerCase() : "table"; 
+        String recordNameLower = shortName != null ? shortName.toLowerCase() : "table";
         String tableUpper = shortName != null ? shortName.toUpperCase() : "TABLE";
         SchemaBuilder.FieldAssembler<Schema> fields = SchemaBuilder
                 .record(recordNameLower) // lower-case to match SR subjects
@@ -571,34 +569,32 @@ public class KcopHandler extends AbstractHandler {
         // 1) Property override takes precedence
         System.out.println(">>> [KcopHandler] Checking key columns override for precedence for " + keyColumnsOverrides.keySet());
         String[] overrideCols = keyColumnsOverrides.get(tableUpper);
-       try {
-        if (overrideCols != null && overrideCols.length > 0) {
-            System.out.println(">>> [KcopHandler] Using key columns override for " + tableUpper + ": " + Arrays.toString(overrideCols));
-            for (String colName : overrideCols) {
-                ColumnMetaData col = schemaTypeConverter.findColumnByName(tableMetaData, colName);
-                Schema colSchema = Schema.create(Type.STRING);
-                if (colName.toUpperCase().startsWith("DH_") || "DH_TRMT".equalsIgnoreCase(colName)) {
-                    colSchema.addProp("logicalType", "TIMESTAMP");
-                    colSchema.addProp("length", 32);
-                } else if (colName.toUpperCase().startsWith("DT_")) {
-                    colSchema.addProp("logicalType", "DATE");
-                    colSchema.addProp("length", 10);
-                } else {
-                    colSchema.addProp("logicalType", "CHARACTER");
-                    colSchema.addProp("length", col != null ? charFormatHandler.safeGetCharLength(col) : 255);
+        try {
+            if (overrideCols != null && overrideCols.length > 0) {
+                System.out.println(">>> [KcopHandler] Using key columns override for " + tableUpper + ": " + Arrays.toString(overrideCols));
+                for (String colName : overrideCols) {
+                    ColumnMetaData col = schemaTypeConverter.findColumnByName(tableMetaData, colName);
+                    Schema colSchema = Schema.create(Type.STRING);
+                    if (colName.toUpperCase().startsWith("DH_") || "DH_TRMT".equalsIgnoreCase(colName)) {
+                        colSchema.addProp("logicalType", "TIMESTAMP");
+                        colSchema.addProp("length", 32);
+                    } else if (colName.toUpperCase().startsWith("DT_")) {
+                        colSchema.addProp("logicalType", "DATE");
+                        colSchema.addProp("length", 10);
+                    } else {
+                        colSchema.addProp("logicalType", "CHARACTER");
+                        colSchema.addProp("length", col != null ? charFormatHandler.safeGetCharLength(col) : 255);
+                    }
+                    colSchema.addProp("dbColumnName", col != null ? col.getColumnName() : colName);
+                    fields.name(colName).type(colSchema).withDefault("");
                 }
-                colSchema.addProp("dbColumnName", col != null ? col.getColumnName() : colName);
-                fields.name(colName).type(colSchema).withDefault("");
+                return fields.endRecord();
             }
-            return fields.endRecord();
+        } catch (Exception e) {
+            System.err.println(">>> [KcopHandler] Error processing key columns override for " + tableUpper + ": " + e.getMessage());
         }
-       } catch (Exception e) {
-        System.err.println(">>> [KcopHandler] Error processing key columns override for " + tableUpper + ": " + e.getMessage());
-       }
-        
 
         // 2) Default spec per table (fixed lengths)
-
         LinkedHashMap<String, Integer> defaults = defaultKeyColumnSpecs.get(tableUpper);
         if (defaults != null && !defaults.isEmpty()) {
             System.out.println(">>> [KcopHandler] Using default key spec for " + tableUpper + ": " + defaults.keySet());
@@ -627,10 +623,11 @@ public class KcopHandler extends AbstractHandler {
         // 3) Fallback to GG metadata isKeyCol() with type inference
         if (tableMetaData != null) {
             LinkedHashMap<String, Schema> selected = new LinkedHashMap<>();
+            System.out.println(">>> [KcopHandler] TableMetaData numColumns=" + tableMetaData.getNumColumns());
             for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
                 ColumnMetaData col = tableMetaData.getColumnMetaData(i);
                 if (col == null || !col.isKeyCol()) {
-                    continue;
+                    System.out.println(">>> [KcopHandler] col=" + col.getColumnName() + " isKey=" + col.isKeyCol());
                 }
 
                 String colName = col.getColumnName();
@@ -678,7 +675,6 @@ public class KcopHandler extends AbstractHandler {
         }
         return fields.endRecord();
     }
-
 
     // Build GenericRecord key from afterImage/beforeImage record inside the envelope
     private String buildKeyString(String table, Schema keySchema, GenericRecord envelopeRecord) {
@@ -805,7 +801,7 @@ public class KcopHandler extends AbstractHandler {
                 System.out.println(">>> [KcopHandler] No catalog part found, using prefix as schema: " + prefix);
                 schema = prefix;
             }
-        }   
+        }
         System.out.println(">>> [KcopHandler] Final parsed names - catalog: " + catalog + ", schema: " + schema + ", table: " + table);
 
         Map<String, String> vars = new HashMap<>();
