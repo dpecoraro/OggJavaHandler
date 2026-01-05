@@ -56,7 +56,7 @@ public class KcopHandler extends AbstractHandler {
     private DsMetaData metaData;
     private AvroSchemaManager schemaManager;
     private SchemaTypeConverter schemaTypeConverter;
-    private KafkaProducer<String, GenericRecord> kafkaProducer; // key via Avro serializer to auto-register in SR
+    private KafkaProducer<String, GenericRecord> kafkaProducer; 
     private String topicMappingTemplate;
     private String kafkaBootstrapServers;
     private String namespacePrefix;
@@ -626,9 +626,17 @@ public class KcopHandler extends AbstractHandler {
             System.out.println(">>> [KcopHandler] TableMetaData numColumns=" + tableMetaData.getNumColumns());
             for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
                 ColumnMetaData col = tableMetaData.getColumnMetaData(i);
-                if (col == null || !col.isKeyCol()) {
-                    System.out.println(">>> [KcopHandler] col=" + col.getColumnName() + " isKey=" + col.isKeyCol());
+                if (col == null) {
+                    System.out.println(">>> [KcopHandler] col[index=" + i + "] is null");
+                    continue;
                 }
+                // Only include columns marked as key by GoldenGate (e.g. KEYCOLS in Replicat)
+                if (!col.isKeyCol()) {
+                    // optional debug
+                    System.out.println(">>> [KcopHandler] col=" + col.getColumnName() + " isKey=false");
+                    continue;
+                }
+                System.out.println(">>> [KcopHandler] col=" + col.getColumnName() + " isKey=true");
 
                 String colName = col.getColumnName();
                 String typeName = col.getDataType() != null ? col.getDataType().toString().toUpperCase() : "";
@@ -671,6 +679,8 @@ public class KcopHandler extends AbstractHandler {
                 for (Map.Entry<String, Schema> e : selected.entrySet()) {
                     fields.name(e.getKey()).type(e.getValue()).withDefault(schemaTypeConverter.getDefaultValue(e.getValue()));
                 }
+            } else {
+                System.out.println(">>> [KcopHandler] Warning: no key columns detected via isKeyCol() for " + tableUpper);
             }
         }
         return fields.endRecord();
@@ -846,7 +856,6 @@ public class KcopHandler extends AbstractHandler {
             String key = m.group(1) != null ? m.group(1).trim() : "";
             String replacement = vars.get(key);
             if (replacement == null) {
-                // leave placeholder as-is
                 m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
             } else {
                 m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
