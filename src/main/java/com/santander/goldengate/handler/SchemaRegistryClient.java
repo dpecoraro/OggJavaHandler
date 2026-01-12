@@ -31,7 +31,7 @@ public class SchemaRegistryClient {
                 if (!t.isEmpty()) registryUrls.add(t);
             }
         }
-        System.out.println(">>> [SchemaRegistryClient] URLs=" + registryUrls);
+        //System.out.println(">>> [SchemaRegistryClient] URLs=" + registryUrls);
     }
 
     public void registerIfNeeded(String subject, Schema schema) {
@@ -41,9 +41,9 @@ public class SchemaRegistryClient {
             int id = register(subject, schema);
             if (id > 0) {
                 registeredSubjects.add(subject);
-                System.out.println(">>> [SchemaRegistryClient] Registered subject=" + subject + " id=" + id);
+                //System.out.println(">>> [SchemaRegistryClient] Registered subject=" + subject + " id=" + id);
             } else {
-                System.out.println(">>> [SchemaRegistryClient] No id returned subject=" + subject);
+                //System.out.println(">>> [SchemaRegistryClient] No id returned subject=" + subject);
             }
         } catch (Exception e) {
             System.err.println("[SchemaRegistryClient] Failed subject=" + subject + " msg=" + e.getMessage());

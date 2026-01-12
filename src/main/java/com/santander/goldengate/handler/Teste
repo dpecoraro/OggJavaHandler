@@ -28,28 +28,28 @@ public class KcopHandler extends AbstractHandler {
     private Set<String> processedTables = new HashSet<>();
 
     public KcopHandler() {
-        System.out.println(">>> [KcopHandler] Constructor called");
+        //System.out.println(">>> [KcopHandler] Constructor called");
     }
 
     public void setKafkaProducerConfigFile(String kafkaProducerConfigFile) {
         this.kafkaProducerConfigFile = kafkaProducerConfigFile;
-        System.out.println(">>> [KcopHandler] kafkaProducerConfigFile set to " + kafkaProducerConfigFile);
+        //System.out.println(">>> [KcopHandler] kafkaProducerConfigFile set to " + kafkaProducerConfigFile);
     }
 
     @Override
     public void init(DsConfiguration config, DsMetaData metaData) {
-        System.out.println(">>> [KcopHandler] init() called");
+        //System.out.println(">>> [KcopHandler] init() called");
         super.init(config, metaData);
         this.metaData = metaData;
         try {
             if (config != null) {
-                System.out.println(">>> [KcopHandler] Configuration loaded successfully");
+                //System.out.println(">>> [KcopHandler] Configuration loaded successfully");
             }
             if (metaData != null && metaData.getTableNames() != null) {
-                System.out.println(">>> [KcopHandler] Tables: " + metaData.getTableNames());
+                //System.out.println(">>> [KcopHandler] Tables: " + metaData.getTableNames());
             }
             if (metaData != null && metaData.getSchemaNames() != null) {
-                System.out.println(">>> [KcopHandler] Schemas: " + metaData.getSchemaNames());
+                //System.out.println(">>> [KcopHandler] Schemas: " + metaData.getSchemaNames());
             }
 
         } catch (Exception ex) {
@@ -82,7 +82,7 @@ public class KcopHandler extends AbstractHandler {
                 String opType = operation.getOperationType() != null
                         ? operation.getOperationType().name() : "UNKNOWN";
 
-                System.out.println(">>> [KcopHandler] Processed " + operationCount
+                //System.out.println(">>> [KcopHandler] Processed " + operationCount
                         + " operations - Last: Table=" + tableName
                         + ", Type=" + opType);
             }
@@ -108,7 +108,7 @@ public class KcopHandler extends AbstractHandler {
                     ? operation.getTableName().toString() : "UNKNOWN";
 
             if (tx == null) {
-                System.out.println(">>> [KcopHandler] Warning: Transaction is NULL for operation on table " + tableName);
+                //System.out.println(">>> [KcopHandler] Warning: Transaction is NULL for operation on table " + tableName);
             }
             DsRecord record = operation.getRecord();
 
@@ -118,13 +118,13 @@ public class KcopHandler extends AbstractHandler {
                     String afterValString = col.getAfterValue();
                     Object beforeObject = col.getBeforeValue();
 
-                    System.out.println(">>> [KcopHandler] Column: " + col.toString()
+                    //System.out.println(">>> [KcopHandler] Column: " + col.toString()
                             + ", Before: " + (beforeObject != null ? beforeObject.toString() : "NULL")
                             + ", After: " + (afterValString != null ? afterValString : "NULL"));
                 });
             }
 
-            System.out.println();
+            //System.out.println();
         } catch (Exception ex) {
             System.err.println("[KcopHandler] Error processing operation: " + ex.getMessage());
         }
@@ -135,11 +135,11 @@ public class KcopHandler extends AbstractHandler {
         try {
             System.err.println("[KcopHandler] Transaction Commit called");
             if (tx != null) {
-                System.out.println(">>> [KcopHandler] Transaction Commit -> TranID: " + tx.getTranID());
+                //System.out.println(">>> [KcopHandler] Transaction Commit -> TranID: " + tx.getTranID());
             }
             Object metadata = event.getSource();
             if (metadata != null) {
-                System.out.println(">>> [KcopHandler] Event Source Metadata: " + metadata.toString());
+                //System.out.println(">>> [KcopHandler] Event Source Metadata: " + metadata.toString());
             }
             return Status.OK;
         } catch (Exception ex) {
@@ -150,14 +150,14 @@ public class KcopHandler extends AbstractHandler {
 
     @Override
     public void destroy() {
-        System.out.println(">>> [KcopHandler] destroy() called");
-        System.out.println(">>> [KcopHandler] Total operations processed: " + operationCount);
+        //System.out.println(">>> [KcopHandler] destroy() called");
+        //System.out.println(">>> [KcopHandler] Total operations processed: " + operationCount);
     }
 
     @Override
     public String reportStatus() {
         String msg = "[KcopHandler] Status = OK (Operations: " + operationCount + ")";
-        System.out.println(">>> " + msg);
+        //System.out.println(">>> " + msg);
         return msg;
     }
 
@@ -171,17 +171,17 @@ public class KcopHandler extends AbstractHandler {
             TableMetaData tableMetaData = metaData.getTableMetaData(tableName);
             
             if (tableMetaData != null) {
-                System.out.println("\n>>> [KcopHandler] ===== Metadata for Table: " + tableName + " =====");
-                System.out.println(">>> Schema: " + tableMetaData.getTableName().getSchemaName());
-                System.out.println(">>> Table: " + tableMetaData.getTableName().getShortName());
-                System.out.println(">>> Catalog: " + tableMetaData.getTableName().getCatalogName());
+                //System.out.println("\n>>> [KcopHandler] ===== Metadata for Table: " + tableName + " =====");
+                //System.out.println(">>> Schema: " + tableMetaData.getTableName().getSchemaName());
+                //System.out.println(">>> Table: " + tableMetaData.getTableName().getShortName());
+                //System.out.println(">>> Catalog: " + tableMetaData.getTableName().getCatalogName());
                 
                 // Itera sobre as colunas usando getColumnMetaData()
-                System.out.println(">>> Columns:");
+                //System.out.println(">>> Columns:");
                 int colIndex = 0;
                 ColumnMetaData col;
                 while ((col = tableMetaData.getColumnMetaData(colIndex)) != null) {
-                    System.out.println(">>>   [" + colIndex + "] Name: " + col.getColumnName() 
+                    //System.out.println(">>>   [" + colIndex + "] Name: " + col.getColumnName() 
                         + ", Type: " + col.getDataType()
                         + ", Nullable: " + col.isNullable()
                         + ", Key: " + col.isKeyCol());
@@ -189,17 +189,17 @@ public class KcopHandler extends AbstractHandler {
                 }
                 
                 // Mostra colunas chave (PK) - identifica pelos que têm isKeyCol() = true
-                System.out.println(">>> Primary Key Columns:");
+                //System.out.println(">>> Primary Key Columns:");
                 int pkColIndex = 0;
                 ColumnMetaData pkCol;
                 while ((pkCol = tableMetaData.getColumnMetaData(pkColIndex)) != null) {
                     if (pkCol.isKeyCol()) {
-                        System.out.println(">>>   " + pkCol.getColumnName());
+                        //System.out.println(">>>   " + pkCol.getColumnName());
                     }
                     pkColIndex++;
                 }
                 
-                System.out.println(">>> ==========================================\n");
+                //System.out.println(">>> ==========================================\n");
             }
         } catch (Exception ex) {
             System.err.println("[KcopHandler] Error getting table metadata for " + tableName + ": " + ex.getMessage());

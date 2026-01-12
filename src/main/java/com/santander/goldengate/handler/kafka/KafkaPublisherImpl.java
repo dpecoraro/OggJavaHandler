@@ -27,7 +27,7 @@ public class KafkaPublisherImpl implements KafkaPublisher {
         props.putIfAbsent(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
         bootstrapServers = props.getProperty(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
         producer = new KafkaProducer<>(props);
-        System.out.println(">>> [KafkaPublisherImpl] Initialized producer bootstrap=" + bootstrapServers);
+        //System.out.println(">>> [KafkaPublisherImpl] Initialized producer bootstrap=" + bootstrapServers);
     }
 
     @Override
@@ -43,7 +43,7 @@ public class KafkaPublisherImpl implements KafkaPublisher {
             if (ex != null) {
                 System.err.println("[KafkaPublisherImpl] Send error topic=" + topic + " key=" + key + " msg=" + ex.getMessage());
             } else {
-                System.out.println(">>> [KafkaPublisherImpl] Sent topic=" + md.topic() + " partition=" + md.partition() + " offset=" + md.offset());
+                //System.out.println(">>> [KafkaPublisherImpl] Sent topic=" + md.topic() + " partition=" + md.partition() + " offset=" + md.offset());
             }
         });
     }
@@ -57,6 +57,6 @@ public class KafkaPublisherImpl implements KafkaPublisher {
         try {
             producer.close();
         } catch (Exception ignore) {}
-        System.out.println(">>> [KafkaPublisherImpl] Producer closed");
+        //System.out.println(">>> [KafkaPublisherImpl] Producer closed");
     }
 }

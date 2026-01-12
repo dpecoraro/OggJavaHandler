@@ -208,7 +208,7 @@ public class SchemaTypeConverter {
         if (envelopeSchema == null) {
             return null;
         }
-        System.out.println(">>> [KcopHandler] Extracting table record schema from envelope: " + envelopeSchema.getFullName());
+        //System.out.println(">>> [KcopHandler] Extracting table record schema from envelope: " + envelopeSchema.getFullName());
         Schema.Field before = envelopeSchema.getField("beforeImage");
         if (before != null) {
             Schema s = before.schema();

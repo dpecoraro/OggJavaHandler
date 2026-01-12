@@ -70,7 +70,7 @@ public class KcopHandler extends AbstractHandler {
     private Map<String, LinkedHashMap<String, Integer>> defaultKeyColumnSpecs = new HashMap<>();
 
     public KcopHandler() {
-        System.out.println(">>> [KcopHandler] Constructor called");
+        //System.out.println(">>> [KcopHandler] Constructor called");
         this.charFormatHandler = new CharFormatHandler();
         LinkedHashMap<String, Integer> table = new LinkedHashMap<>();
         table.put("CD_BANC", 4);
@@ -82,22 +82,22 @@ public class KcopHandler extends AbstractHandler {
 
     public void setKafkaProducerConfigFile(String kafkaProducerConfigFile) {
         this.kafkaProducerConfigFile = kafkaProducerConfigFile;
-        System.out.println(">>> [KcopHandler] kafkaProducerConfigFile set to " + kafkaProducerConfigFile);
+        //System.out.println(">>> [KcopHandler] kafkaProducerConfigFile set to " + kafkaProducerConfigFile);
     }
 
     public void setTopicMappingTemplate(String topicMappingTemplate) {
         this.topicMappingTemplate = topicMappingTemplate;
-        System.out.println(">>> [KcopHandler] topicMappingTemplate set to " + topicMappingTemplate);
+        //System.out.println(">>> [KcopHandler] topicMappingTemplate set to " + topicMappingTemplate);
     }
 
     public void setNameSpacePrefix(String namespacePrefix) {
         this.namespacePrefix = namespacePrefix;
-        System.out.println(">>> [KcopHandler] namespacePrefix set to " + namespacePrefix);
+        //System.out.println(">>> [KcopHandler] namespacePrefix set to " + namespacePrefix);
     }
 
     @Override
     public void init(DsConfiguration config, DsMetaData metaData) {
-        System.out.println(">>> [KcopHandler] init() called");
+        //System.out.println(">>> [KcopHandler] init() called");
         super.init(config, metaData);
         this.metaData = metaData;
 
@@ -107,7 +107,7 @@ public class KcopHandler extends AbstractHandler {
             if (kafkaProducerConfigFile != null) {
                 try (FileInputStream fis = new FileInputStream(kafkaProducerConfigFile)) {
                     kafkaProps.load(fis);
-                    System.out.println(">>> [KcopHandler] Loaded Kafka producer properties from " + kafkaProducerConfigFile);
+                    //System.out.println(">>> [KcopHandler] Loaded Kafka producer properties from " + kafkaProducerConfigFile);
                 }
             } else {
                 throw new NoSuchAttributeException("lack of kafka producer config file");
@@ -149,18 +149,18 @@ public class KcopHandler extends AbstractHandler {
                             .toArray(String[]::new);
                     if (cols.length > 0) {
                         keyColumnsOverrides.put(tableCode, cols);
-                        System.out.println(">>> [KcopHandler] Key columns override loaded for " + tableCode + ": " + Arrays.toString(cols));
+                        //System.out.println(">>> [KcopHandler] Key columns override loaded for " + tableCode + ": " + Arrays.toString(cols));
                     }
                 }
-                System.out.println(">>> [KcopHandler] Key columns override keys: " + keyColumnsOverrides.keySet());
+                //System.out.println(">>> [KcopHandler] Key columns override keys: " + keyColumnsOverrides.keySet());
             }
 
             kafkaProducer = new KafkaProducer<>(kafkaProps);
-            System.out.println(">>> [KcopHandler] Kafka Producer initialized");
-            System.out.println(">>> [KcopHandler] Kafka bootstrap.servers: " + kafkaBootstrapServers);
-            System.out.println(">>> [KcopHandler] Namespace prefix: " + namespacePrefix);
+            //System.out.println(">>> [KcopHandler] Kafka Producer initialized");
+            //System.out.println(">>> [KcopHandler] Kafka bootstrap.servers: " + kafkaBootstrapServers);
+            //System.out.println(">>> [KcopHandler] Namespace prefix: " + namespacePrefix);
             if (topicMappingTemplate != null) {
-                System.out.println(">>> [KcopHandler] Topic template: " + topicMappingTemplate);
+                //System.out.println(">>> [KcopHandler] Topic template: " + topicMappingTemplate);
             }
         } catch (IOException | NoSuchAttributeException ex) {
             System.err.println("[KcopHandler] Error initializing Kafka Producer: " + ex.getMessage());
@@ -176,7 +176,7 @@ public class KcopHandler extends AbstractHandler {
 
             operationCount++;
             if (operationCount % 100 == 0) {
-                System.out.println(">>> [KcopHandler] Processed: " + operationCount);
+                //System.out.println(">>> [KcopHandler] Processed: " + operationCount);
             }
 
             // pass event to processOperation
@@ -192,7 +192,7 @@ public class KcopHandler extends AbstractHandler {
     // include event to read operation timestamp
     private void processOperation(DsEvent event, DsTransaction tx, DsOperation operation) {
         if (tx == null || operation == null) {
-            System.out.println(">>> [KcopHandler] Warning: tx/operation null");
+            //System.out.println(">>> [KcopHandler] Warning: tx/operation null");
             return;
         }
 
@@ -224,22 +224,22 @@ public class KcopHandler extends AbstractHandler {
                 idx++;
             }
         } else {
-            System.out.println(">>> [KcopHandler] Warning: record/columns null for table " + table);
+            //System.out.println(">>> [KcopHandler] Warning: record/columns null for table " + table);
         }
 
         try {
             Schema avroSchema = schemaManager.getOrCreateAvroSchema(table, tableMetaData);
             Schema avroSchemaFixed = schemaTypeConverter.rebuildEnvelopeWithClonedTableSchema(avroSchema, tableMetaData);
-            System.out.println(">>> [KcopHandler] Using Avro schema: " + avroSchemaFixed.getFields());
+            //System.out.println(">>> [KcopHandler] Using Avro schema: " + avroSchemaFixed.getFields());
 
             GenericRecord cdcRecord = new GenericData.Record(avroSchemaFixed);
-            System.out.println(">>> [KcopHandler] Created CDC GenericRecord " + cdcRecord.getSchema());
+            //System.out.println(">>> [KcopHandler] Created CDC GenericRecord " + cdcRecord.getSchema());
             if (!beforeImage.isEmpty()) {
-                System.out.println("Creating beforeRec");
+                //System.out.println("Creating beforeRec");
                 GenericRecord beforeRec = createTableRecord(avroSchemaFixed, "beforeImage", beforeImage);
                 cdcRecord.put("beforeImage", beforeRec);
             } else {
-                System.out.println("beforeImage does not exist, setting variable to null");
+                //System.out.println("beforeImage does not exist, setting variable to null");
                 cdcRecord.put("beforeImage", null);
             }
             if (!afterImage.isEmpty()) {
@@ -258,17 +258,16 @@ public class KcopHandler extends AbstractHandler {
             //cdcRecord.put("A_JOBUSER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser); // changed
             //cdcRecord.put("A_USER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser);    // changed
             // Build topic
-            System.out.println(">>> [KcopHandler] Building topic");
+            //System.out.println(">>> [KcopHandler] Building topic");
             String topic = resolveTopic(topicMappingTemplate, table);
 
             // Build Avro key schema (RECORD) and key GenericRecord from PK columns
-            System.out.println(">>> [KcopHandler] Building KeySchema");
+            //System.out.println(">>> [KcopHandler] Building KeySchema");
             Schema keySchema = buildRecordKeySchema(table, tableMetaData);
-            System.out.println(">>> [KcopHandler] Building KeyString");
+            //System.out.println(">>> [KcopHandler] Building KeyString");
             String keyRecord = buildKeyString(table, keySchema, cdcRecord);
 
-            // Log control fields and key
-            System.out.println(">>> [KcopHandler] Prepared message:"
+            /*System.out.println(">>> [KcopHandler] Prepared message:"
                     + " topic=" + topic
                     + " keyRecord=" + keyRecord
                     + " keySchema=" + keySchema.getFullName()
@@ -276,53 +275,53 @@ public class KcopHandler extends AbstractHandler {
                     + " A_CCID=" + cdcRecord.get("A_CCID")
                     + " A_TIMSTAMP=" + cdcRecord.get("A_TIMSTAMP")
                     + " A_JOBUSER=" + cdcRecord.get("A_JOBUSER")
-                    + " A_USER=" + cdcRecord.get("A_USER"));
+                    + " A_USER=" + cdcRecord.get("A_USER")); */
 
             // Register schemas once per topic (value and key) — RECORD key
             if (lastRegisteredTopic == null || !lastRegisteredTopic.equals(topic)) {
                 String valueSubject = topic + "-value";
                 String keySubject = topic + "-key";
 
-                System.out.println(">>> [KcopHandler] Registering value schema:"
+                /*System.out.println(">>> [KcopHandler] Registering value schema:"
                         + " subject=" + valueSubject
                         + " schemaName=" + avroSchemaFixed.getFullName());
-                schemaRegistryClient.registerIfNeeded(valueSubject, avroSchemaFixed);
+                schemaRegistryClient.registerIfNeeded(valueSubject, avroSchemaFixed);*/
 
-                System.out.println(">>> [KcopHandler] Registering key schema:"
+                /*(System.out.println(">>> [KcopHandler] Registering key schema:"
                         + " subject=" + keySubject
                         + " schema=" + keySchema.toString());
-                schemaRegistryClient.registerIfNeeded(keySubject, keySchema);
+                schemaRegistryClient.registerIfNeeded(keySubject, keySchema); */
 
-                System.out.println(">>> [KcopHandler] Schema registry subjects registered:"
+                /*System.out.println(">>> [KcopHandler] Schema registry subjects registered:"
                         + " valueSubject=" + valueSubject
-                        + " keySubject=" + keySubject);
+                        + " keySubject=" + keySubject);*/
                 lastRegisteredTopic = topic;
             }
 
-            System.out.println(">>> [KcopHandler] Envelope schema (pretty): " + avroSchemaFixed.toString(true));
-            System.out.println(">>> [KcopHandler] CDC Record payload: " + cdcRecord);
-            System.out.println(">>> [KcopHandler] Key Record payload: " + keyRecord);
-            System.out.println(">>> [KcopHandler] BeforeImage map: " + beforeImage);
-            System.out.println(">>> [KcopHandler] AfterImage map: " + afterImage);
+            //System.out.println(">>> [KcopHandler] Envelope schema (pretty): " + avroSchemaFixed.toString(true));
+            //System.out.println(">>> [KcopHandler] CDC Record payload: " + cdcRecord);
+            //System.out.println(">>> [KcopHandler] Key Record payload: " + keyRecord);
+            //System.out.println(">>> [KcopHandler] BeforeImage map: " + beforeImage);
+            //System.out.println(">>> [KcopHandler] AfterImage map: " + afterImage);
 
             ProducerRecord<String, GenericRecord> producerRecord = new ProducerRecord<>(topic, keyRecord, cdcRecord);
-            System.out.println(">>> [KcopHandler] Sending to Kafka: bootstrap=" + kafkaBootstrapServers
+            /*System.out.println(">>> [KcopHandler] Sending to Kafka: bootstrap=" + kafkaBootstrapServers
                     + " topic=" + topic
-                    + " key.schema=" + keySchema.getFullName());
+                    + " key.schema=" + keySchema.getFullName());*/
 
             kafkaProducer.send(producerRecord, (metadata, exception) -> {
                 if (exception != null) {
                     System.err.println("[KcopHandler] Kafka send error: " + exception.getMessage());
                 } else {
-                    System.out.println(">>> [KcopHandler] Sent OK: topic=" + metadata.topic()
+                    /*System.out.println(">>> [KcopHandler] Sent OK: topic=" + metadata.topic()
                             + " partition=" + metadata.partition()
                             + " offset=" + metadata.offset()
-                            + " timestamp=" + metadata.timestamp());
+                            + " timestamp=" + metadata.timestamp()); */
                 }
             });
 
-            System.out.println(">>> SCHEMA: " + avroSchemaFixed.toString(true));
-            System.out.println(">>> CDC Record: " + cdcRecord);
+            //System.out.println(">>> SCHEMA: " + avroSchemaFixed.toString(true));
+            //System.out.println(">>> CDC Record: " + cdcRecord);
         } catch (Exception ex) {
             System.err.println("[KcopHandler] Error creating/sending Avro: " + ex.getMessage());
         }
@@ -567,11 +566,11 @@ public class KcopHandler extends AbstractHandler {
                 .namespace("key.SOURCEDB.BALP")
                 .fields();
         // 1) Property override takes precedence
-        System.out.println(">>> [KcopHandler] Checking key columns override for precedence for " + keyColumnsOverrides.keySet());
+        //System.out.println(">>> [KcopHandler] Checking key columns override for precedence for " + keyColumnsOverrides.keySet());
         String[] overrideCols = keyColumnsOverrides.get(tableUpper);
         try {
             if (overrideCols != null && overrideCols.length > 0) {
-                System.out.println(">>> [KcopHandler] Using key columns override for " + tableUpper + ": " + Arrays.toString(overrideCols));
+                //System.out.println(">>> [KcopHandler] Using key columns override for " + tableUpper + ": " + Arrays.toString(overrideCols));
                 for (String colName : overrideCols) {
                     ColumnMetaData col = schemaTypeConverter.findColumnByName(tableMetaData, colName);
                     Schema colSchema = Schema.create(Type.STRING);
@@ -597,7 +596,7 @@ public class KcopHandler extends AbstractHandler {
         // 2) Default spec per table (fixed lengths)
         LinkedHashMap<String, Integer> defaults = defaultKeyColumnSpecs.get(tableUpper);
         if (defaults != null && !defaults.isEmpty()) {
-            System.out.println(">>> [KcopHandler] Using default key spec for " + tableUpper + ": " + defaults.keySet());
+            //System.out.println(">>> [KcopHandler] Using default key spec for " + tableUpper + ": " + defaults.keySet());
             for (Map.Entry<String, Integer> e : defaults.entrySet()) {
                 String colName = e.getKey();
                 int len = e.getValue() != null ? e.getValue() : 255;
@@ -623,20 +622,20 @@ public class KcopHandler extends AbstractHandler {
         // 3) Fallback to GG metadata isKeyCol() with type inference
         if (tableMetaData != null) {
             LinkedHashMap<String, Schema> selected = new LinkedHashMap<>();
-            System.out.println(">>> [KcopHandler] TableMetaData numColumns=" + tableMetaData.getNumColumns());
+            //System.out.println(">>> [KcopHandler] TableMetaData numColumns=" + tableMetaData.getNumColumns());
             for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
                 ColumnMetaData col = tableMetaData.getColumnMetaData(i);
                 if (col == null) {
-                    System.out.println(">>> [KcopHandler] col[index=" + i + "] is null");
+                    //System.out.println(">>> [KcopHandler] col[index=" + i + "] is null");
                     continue;
                 }
                 // Only include columns marked as key by GoldenGate (e.g. KEYCOLS in Replicat)
                 if (!col.isKeyCol()) {
                     // optional debug
-                    System.out.println(">>> [KcopHandler] col=" + col.getColumnName() + " isKey=false");
+                    //System.out.println(">>> [KcopHandler] col=" + col.getColumnName() + " isKey=false");
                     continue;
                 }
-                System.out.println(">>> [KcopHandler] col=" + col.getColumnName() + " isKey=true");
+                //System.out.println(">>> [KcopHandler] col=" + col.getColumnName() + " isKey=true");
 
                 String colName = col.getColumnName();
                 String typeName = col.getDataType() != null ? col.getDataType().toString().toUpperCase() : "";
@@ -675,12 +674,12 @@ public class KcopHandler extends AbstractHandler {
                 selected.put(colName, colSchema);
             }
             if (!selected.isEmpty()) {
-                System.out.println(">>> [KcopHandler] Using GG key columns for " + tableUpper + ": " + selected.keySet());
+                //System.out.println(">>> [KcopHandler] Using GG key columns for " + tableUpper + ": " + selected.keySet());
                 for (Map.Entry<String, Schema> e : selected.entrySet()) {
                     fields.name(e.getKey()).type(e.getValue()).withDefault(schemaTypeConverter.getDefaultValue(e.getValue()));
                 }
             } else {
-                System.out.println(">>> [KcopHandler] Warning: no key columns detected via isKeyCol() for " + tableUpper);
+                //System.out.println(">>> [KcopHandler] Warning: no key columns detected via isKeyCol() for " + tableUpper);
             }
         }
         return fields.endRecord();
@@ -757,11 +756,11 @@ public class KcopHandler extends AbstractHandler {
 
     @Override
     public void destroy() {
-        System.out.println(">>> [KcopHandler] destroy() called");
+        //System.out.println(">>> [KcopHandler] destroy() called");
         if (kafkaProducer != null) {
             kafkaProducer.flush();
             kafkaProducer.close();
-            System.out.println(">>> [KcopHandler] Kafka Producer closed");
+            //System.out.println(">>> [KcopHandler] Kafka Producer closed");
         }
     }
 
@@ -785,9 +784,9 @@ public class KcopHandler extends AbstractHandler {
     // Resolve topic from template; fallback keeps previous behavior if template is missing
     protected String resolveTopic(String template, String fullyQualifiedTableName) {
         String normalized = normalizeTopicTemplate(template);
-        System.out.println(">>> [KcopHandler] Resolving topic for table " + fullyQualifiedTableName + " using template: " + normalized);
+        //System.out.println(">>> [KcopHandler] Resolving topic for table " + fullyQualifiedTableName + " using template: " + normalized);
         if (normalized == null || normalized.isEmpty()) {
-            System.out.println(">>> [KcopHandler] No topic template provided, using default topic naming: " + "cdc." + fullyQualifiedTableName.toLowerCase().replace(".", "_"));
+            //System.out.println(">>> [KcopHandler] No topic template provided, using default topic naming: " + "cdc." + fullyQualifiedTableName.toLowerCase().replace(".", "_"));
             return "cdc." + fullyQualifiedTableName.toLowerCase().replace(".", "_");
         }
 
@@ -796,7 +795,7 @@ public class KcopHandler extends AbstractHandler {
         String schema = "";
         String catalog = "";
 
-        System.out.println(">>> [KcopHandler] Parsing fully qualified table name: " + fqn);
+        //System.out.println(">>> [KcopHandler] Parsing fully qualified table name: " + fqn);
         //aedt098
         if (fqn.contains(".")) {
             table = fqn.substring(fqn.lastIndexOf('.') + 1);
@@ -808,11 +807,11 @@ public class KcopHandler extends AbstractHandler {
                 //balp
                 catalog = prefix.substring(0, prefix.lastIndexOf('.'));
             } else {
-                System.out.println(">>> [KcopHandler] No catalog part found, using prefix as schema: " + prefix);
+                //System.out.println(">>> [KcopHandler] No catalog part found, using prefix as schema: " + prefix);
                 schema = prefix;
             }
         }
-        System.out.println(">>> [KcopHandler] Final parsed names - catalog: " + catalog + ", schema: " + schema + ", table: " + table);
+        //System.out.println(">>> [KcopHandler] Final parsed names - catalog: " + catalog + ", schema: " + schema + ", table: " + table);
 
         Map<String, String> vars = new HashMap<>();
         vars.put("fullyQualifiedTableName", fqn);
@@ -846,7 +845,7 @@ public class KcopHandler extends AbstractHandler {
     // Simple ${var} substitution; unknown vars are left untouched.
     private String substitutePlaceholders(String template, Map<String, String> vars) {
         if (template == null || template.isEmpty() || vars == null || vars.isEmpty()) {
-            System.out.println(">>> [KcopHandler] No substitution needed for template: " + template);
+            //System.out.println(">>> [KcopHandler] No substitution needed for template: " + template);
             return template;
         }
 
@@ -862,7 +861,7 @@ public class KcopHandler extends AbstractHandler {
             }
         }
         m.appendTail(sb);
-        System.out.println(">>> [KcopHandler] Substituted template: " + sb.toString());
+        //System.out.println(">>> [KcopHandler] Substituted template: " + sb.toString());
         return sb.toString();
     }
 

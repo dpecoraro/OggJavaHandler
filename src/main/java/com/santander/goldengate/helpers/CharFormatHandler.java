@@ -32,9 +32,9 @@ public class CharFormatHandler {
 
         // loga 1x por coluna
         if (loggedLenCols.add(key)) {
-            System.out.println(">>> [LEN-DEBUG] column=" + key
+            /*System.out.println(">>> [LEN-DEBUG] column=" + key
                     + " class=" + col.getClass().getName()
-                    + " dataType=" + (col.getDataType() != null ? col.getDataType().toString() : "null"));
+                    + " dataType=" + (col.getDataType() != null ? col.getDataType().toString() : "null")); */
 
             String[] probes = new String[]{
                 "getLength", "getCharLength", "getColumnLength", "getDataLength",
@@ -45,9 +45,9 @@ public class CharFormatHandler {
                 try {
                     Method m = col.getClass().getMethod(mName);
                     Object v = m.invoke(col);
-                    System.out.println(">>> [LEN-DEBUG] " + key + "." + mName + "=" + v);
+                    //System.out.println(">>> [LEN-DEBUG] " + key + "." + mName + "=" + v);
                 } catch (Exception e) {
-                    System.out.println(">>> [LEN-DEBUG] " + key + "." + mName + " (n/a)");
+                    //System.out.println(">>> [LEN-DEBUG] " + key + "." + mName + " (n/a)");
                 }
             }
         }
