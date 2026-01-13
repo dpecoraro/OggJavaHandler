@@ -1,67 +1,164 @@
 # GoldenGate KCOP Handler
 
-Implementação de um handler Java com ciclo de vida compatível com o Oracle GoldenGate Java Adapter (javawriter):
+Handler Java para o **Oracle GoldenGate (Java Adapter / javawriter)** que transforma operações CDC (INSERT/UPDATE/DELETE) em eventos **Avro** e publica em **Kafka**.
 
-- `init(Properties props)`
-- `processRecord(...)` (N vezes)
-- `destroy()`
+> Repositório: `golden-gate-kcop-handler` (Java 11 / Maven)
 
-Esta base não depende do `ggjava.jar` para compilar, permitindo desenvolvimento local. Em execução no GoldenGate, ele instanciará a classe `com.santander.goldengate.handler.KcopHandler` informada em `custom.properties`.
+## Visão geral do fluxo
 
-## Estrutura
+1. O **Replicat** do GoldenGate executa o **Java Adapter** (`libggjava.so` + `ggjava.jar`).
+2. O Adapter instancia a classe `com.santander.goldengate.handler.KcopHandler` (este projeto).
+3. Para cada operação CDC, o handler:
+   - lê metadados de tabela/colunas via API do GoldenGate
+   - cria (ou reutiliza) um **Schema Avro** compatível
+   - monta um **envelope** com `beforeImage` / `afterImage` + campos de auditoria
+   - calcula uma **chave** (`String`) a partir das colunas-chave
+   - publica em um **tópico Kafka** usando `KafkaProducer` + `KafkaAvroSerializer`.
 
-- `com.santander.goldengate.handler.KcopHandler`: implementa o ciclo de vida, escreve registros em Parquet usando Avro.
-- `com.santander.goldengate.Program`: pequeno simulador local do fluxo `init -> processRecord* -> destroy`.
-- `src/main/resources/custom.properties.template`: exemplo de configuração para o Adapter.
+## Principais bibliotecas (com foco no GoldenGate)
 
-## Como rodar localmente
+### Oracle GoldenGate Java API (`ggjava`)
+Dependência definida no [pom.xml](pom.xml) como `systemPath`:
+- `com.oracle.goldengate:ggjava:${ogg.version}` (ex.: 21.9.0)
 
-1. Build do projeto:
+É a API que fornece:
+- `oracle.goldengate.datasource.AbstractHandler`: classe base do handler.
+- `oracle.goldengate.datasource.DsEvent`, `DsTransaction`, `DsOperation`: eventos, transações e operações CDC.
+- `oracle.goldengate.datasource.meta.DsMetaData`, `TableMetaData`, `ColumnMetaData`: metadados das tabelas/colunas (inclui flags como `isKeyCol()`).
+
+**Pontos importantes do ciclo de vida:**
+- `init(DsConfiguration config, DsMetaData metaData)`: chamado pelo GoldenGate ao inicializar o handler.
+- `operationAdded(DsEvent event, DsTransaction tx, DsOperation operation)`: chamado para cada operação CDC.
+- `transactionCommit(...)`: chamado em commit de transação.
+- `destroy()`: chamado no encerramento.
+
+### Oracle GoldenGate DB Util (`ggdbutil`)
+Também referenciado via `systemPath` no [pom.xml](pom.xml):
+- `com.oracle.goldengate:ggdbutil:23.9.2.25.10.001`
+
+> Observação: no código lido, o uso direto de `ggdbutil` não é evidente nas classes principais; ele pode existir por compatibilidade/ambiente de runtime.
+
+### Avro
+- `org.apache.avro:avro`
+
+Usado para:
+- criar esquemas dinamicamente
+- produzir `GenericRecord` para `beforeImage`/`afterImage` e envelope
+
+### Kafka + Confluent
+- `org.apache.kafka:kafka-clients`
+- `io.confluent:kafka-avro-serializer`
+
+O handler cria um `KafkaProducer<String, GenericRecord>` e configura:
+- `key.serializer=org.apache.kafka.common.serialization.StringSerializer`
+- `value.serializer=io.confluent.kafka.serializers.KafkaAvroSerializer`
+
+## Estrutura do código (classes relevantes)
+
+### `KcopHandler`
+Arquivo: [src/main/java/com/santander/goldengate/handler/KcopHandler.java](src/main/java/com/santander/goldengate/handler/KcopHandler.java)
+
+Responsabilidades principais:
+- **Integração GoldenGate:** herda `AbstractHandler` e implementa `init(...)` e `operationAdded(...)`.
+- **Leitura de dados CDC:** percorre `DsRecord`/`DsColumn` e monta mapas `beforeImage` e `afterImage`.
+- **Schema Avro:** pede ao `AvroSchemaManager` um schema por tabela e usa `SchemaTypeConverter` para ajustes.
+- **Envelope CDC:** cria `GenericRecord` com:
+  - `beforeImage` (record ou `null`)
+  - `afterImage` (record ou `null`)
+  - `A_ENTTYP` (tipo de operação)
+  - `A_CCID` (transaction id)
+  - `A_TIMSTAMP` (timestamp formatado)
+- **Chave do Kafka (String):**
+  - cria um **schema de chave** (record) baseado em:
+    1) override via propriedades (`gg.handler.kafkahandler.keyColumns.<TABELA>`)
+    2) default interno (`defaultKeyColumnSpecs`)
+    3) fallback para metadado GG (`ColumnMetaData.isKeyCol()`)
+  - monta a string da chave concatenando campos com padding quando há `length`.
+- **Publicação Kafka:** envia `ProducerRecord<String, GenericRecord>`.
+
+### `AvroSchemaManager`
+Arquivo: [src/main/java/com/santander/goldengate/handler/AvroSchemaManager.java](src/main/java/com/santander/goldengate/handler/AvroSchemaManager.java)
+
+Cria e faz cache de schema por tabela:
+- define o **record da tabela** com base em `TableMetaData`/`ColumnMetaData`
+- cria o **envelope** `AuditRecord` com unions anuláveis:
+  - `beforeImage`: `null | <TableRecord>`
+  - `afterImage`: `null | <TableRecord>`
+  - `A_ENTTYP`, `A_CCID`, `A_TIMSTAMP`, `A_JOBUSER`, `A_USER`: `null | string`
+
+Cada coluna recebe propriedades Avro úteis:
+- `logicalType` (ex.: `DECIMAL`, `DATE`, `TIMESTAMP`, `CHARACTER`, `BINARY`)
+- `precision`/`scale` quando decimal
+- `length` para strings
+- `dbColumnName`
+
+### `SchemaRegistryClient`
+Arquivo: [src/main/java/com/santander/goldengate/handler/SchemaRegistryClient.java](src/main/java/com/santander/goldengate/handler/SchemaRegistryClient.java)
+
+Cliente simples para registrar schemas no Schema Registry via REST.
+
+No `KcopHandler`, a inicialização ocorre via `schemaRegistryClient.init(kafkaProps)`. O registro em si está presente, mas comentado; na prática, **o `KafkaAvroSerializer` também consegue registrar automaticamente**, desde que `schema.registry.url` esteja definido.
+
+### Helpers (`helpers/*`)
+Pasta: [src/main/java/com/santander/goldengate/helpers/](src/main/java/com/santander/goldengate/helpers/)
+
+Utilitários para:
+- conversão de tipos e defaults Avro (`SchemaTypeConverter`)
+- formatação de datas (`DateFormatHandler`)
+- pad/length e tratamento de char (`CharFormatHandler`)
+- mapear tipo de operação GG (`EntityTypeFormatHandler`)
+
+## Configuração (GoldenGate)
+
+### Replicat (`replicat.prm`)
+Exemplo no arquivo [replicat.prm](replicat.prm):
+- carrega o Java Adapter:
+  - `TARGETDB LIBFILE libggjava.so SET property=.../custom.properties`
+- define `javawriter.bootoptions` com classpath incluindo:
+  - `ggjava.jar`
+  - o JAR gerado por este projeto (`KcopHandler01.jar` ou `...-jar-with-dependencies.jar`)
+  - dependências do Kafka (no exemplo, via pasta `.../dependencies/kafka_3.7.2/*`)
+
+### custom.properties
+Template atual em [src/main/resources/custom.properties.template](src/main/resources/custom.properties.template).
+
+**Importante:** esse template parece estar mais orientado a um exemplo “parquet”. Para o fluxo Kafka/Avro deste handler, o que realmente é lido hoje pelo `KcopHandler` é:
+- caminho do arquivo de propriedades do producer Kafka (você seta via `setKafkaProducerConfigFile(...)` no handler)
+- parâmetros como `schema.registry.url` (diretamente ou via `value.converter.schema.registry.url` / `key.converter.schema.registry.url`)
+- `bootstrap.servers`
+- opcionalmente, overrides de chave:
+  - `gg.handler.kafkahandler.keyColumns.<TABELA>=COL1,COL2,...`
+
+
+## Build
+
+- Requer Java 11.
+- Requer que `ggjava.jar` e `ggdbutil-*.jar` existam no caminho configurado por `ogg.home` do [pom.xml](pom.xml).
+
+Comandos:
 
 ```bash
-mvn -q -DskipTests package
+mvn -q clean package
 ```
 
-2. Executar o simulador com propriedades default:
+O build gera um JAR “fat” (com dependências) via `maven-assembly-plugin`.
+
+## Testes
 
 ```bash
-java -jar target/golden-gate-kcop-handler-1.0-SNAPSHOT-jar-with-dependencies.jar
+mvn -q test
 ```
 
-Saída esperada: `target/demo-output.parquet` com alguns registros exemplo.
+Testes existentes:
+- [src/test/java/com/santander/goldengate/handler/AvroSchemaManagerTest.java](src/test/java/com/santander/goldengate/handler/AvroSchemaManagerTest.java)
+- [src/test/java/com/santander/goldengate/handler/KcopHandlerTest.java](src/test/java/com/santander/goldengate/handler/KcopHandlerTest.java)
 
-3. Executar com um arquivo de propriedades:
+## Observações operacionais
 
-```bash
-java -Dprops=/caminho/custom.properties -jar target/golden-gate-kcop-handler-1.0-SNAPSHOT-jar-with-dependencies.jar
-```
+- **Schema Registry:** o handler tenta garantir `schema.registry.url` (usando fallbacks `value.converter.schema.registry.url` / `key.converter.schema.registry.url`).
+- **Key do Kafka:** hoje o producer usa **key String** (não Avro). Existe um “schema de key” construído, mas ele é usado para definir regras de padding/tipos e não é enviado como Avro.
+- **Tópico:** é resolvido por template (`topicMappingTemplate`) via `resolveTopic(...)`.
 
-## Integrando com GoldenGate
+---
 
-1. Copie o JAR com dependências (`*-jar-with-dependencies.jar`) para o diretório do GoldenGate ou para um local acessível.
-2. Configure o `custom.properties` usando o template em `src/main/resources/custom.properties.template`.
-3. No `custom.properties`, aponte `kcoph.handlertype=com.santander.goldengate.handler.KcopHandler`.
-4. No parâmetro do writer, referencia o `custom.properties`. Exemplo de trecho do `extract/replicat`:
-
-```
-map ... , target ..., COLMAP (...)
--- writer parameters (exemplo genérico) 
--- gg.handlerlist=kcoph
--- kcoph.type=java
--- kcoph.mode=op
--- kcoph.handlertype=com.santander.goldengate.handler.KcopHandler
--- set properties file via adapter startup or parameter dependendo do ambiente
-```
-
-> Observação: para usar os tipos/SDKs do GoldenGate (ex: `oracle.goldengate.datasource.*`), adicione o `ggjava.jar` ao Maven local (comentário no `pom.xml`) ou use `systemPath` apontando para o jar no filesystem.
-
-## Propriedades suportadas
-
-- `kcop.output.file`: caminho do arquivo Parquet de saída (ex.: `/ogg/out/kcop-output.parquet`)
-- `kcop.avro.schemaFile`: caminho para um `.avsc`
-- `kcop.avro.schemaJson`: conteúdo JSON inline do schema
-- `kcop.parquet.compression`: `SNAPPY|GZIP|UNCOMPRESSED|ZSTD|LZ4`
-
-## Testes rápidos
-
-Você pode alterar o `Program` para processar também um arquivo JSON linha-a-linha e validar o esquema. Atualmente `processRecord` aceita `String` (JSON) ou `Map<String,Object>`.
+Se você me disser qual é o padrão real do `custom.properties` em produção (quais chaves vocês usam para apontar `kafkaProducerConfigFile`, `topicMappingTemplate` e `namespacePrefix`), eu ajusto o README para refletir exatamente a configuração usada no ambiente.

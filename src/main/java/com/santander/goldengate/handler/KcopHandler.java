@@ -284,17 +284,17 @@ public class KcopHandler extends AbstractHandler {
 
                 /*System.out.println(">>> [KcopHandler] Registering value schema:"
                         + " subject=" + valueSubject
-                        + " schemaName=" + avroSchemaFixed.getFullName());
-                schemaRegistryClient.registerIfNeeded(valueSubject, avroSchemaFixed);*/
+                        + " schemaName=" + avroSchemaFixed.getFullName());*/
+                schemaRegistryClient.registerIfNeeded(valueSubject, avroSchemaFixed);
 
                 /*(System.out.println(">>> [KcopHandler] Registering key schema:"
                         + " subject=" + keySubject
-                        + " schema=" + keySchema.toString());
-                schemaRegistryClient.registerIfNeeded(keySubject, keySchema); */
+                        + " schema=" + keySchema.toString());*/
+                schemaRegistryClient.registerIfNeeded(keySubject, keySchema); 
 
-                /*System.out.println(">>> [KcopHandler] Schema registry subjects registered:"
+                System.out.println(">>> [KcopHandler] Schema registry subjects registered:"
                         + " valueSubject=" + valueSubject
-                        + " keySubject=" + keySubject);*/
+                        + " keySubject=" + keySubject);
                 lastRegisteredTopic = topic;
             }
 
