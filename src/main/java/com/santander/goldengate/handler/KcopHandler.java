@@ -251,7 +251,6 @@ public class KcopHandler extends AbstractHandler {
 
             cdcRecord.put("A_ENTTYP", opType);
             cdcRecord.put("A_CCID", tx.getTranID() != null ? tx.getTranID().toString() : null);
-            // Use event/operation timestamp with space separator and 12 fractional digits
             cdcRecord.put("A_TIMSTAMP", dateFormatHandler.formatMillisSpace12(extractOperationTimestampMillis(event, tx, operation))); // changed
 
             //String ggUser = extractUser(event, tx, operation);
@@ -559,13 +558,11 @@ public class KcopHandler extends AbstractHandler {
         String shortName = table != null && table.contains(".")
                 ? table.substring(table.lastIndexOf('.') + 1)
                 : table;
-        String recordNameLower = shortName != null ? shortName.toLowerCase() : "table";
         String tableUpper = shortName != null ? shortName.toUpperCase() : "TABLE";
         SchemaBuilder.FieldAssembler<Schema> fields = SchemaBuilder
-                .record(recordNameLower) // lower-case to match SR subjects
+                .record(tableUpper) 
                 .namespace("key.SOURCEDB.BALP")
                 .fields();
-        // 1) Property override takes precedence
         //System.out.println(">>> [KcopHandler] Checking key columns override for precedence for " + keyColumnsOverrides.keySet());
         String[] overrideCols = keyColumnsOverrides.get(tableUpper);
         try {
@@ -582,6 +579,9 @@ public class KcopHandler extends AbstractHandler {
                         colSchema.addProp("length", 10);
                     } else {
                         colSchema.addProp("logicalType", "CHARACTER");
+                        var colLength = col != null ? charFormatHandler.safeGetCharLength(col) : 255;
+                        System.out.println("Char length for column " + colName + ": " + colLength );
+                        System.out.println("Char length no padrao certo: " + colLength / 3 );
                         colSchema.addProp("length", col != null ? charFormatHandler.safeGetCharLength(col) : 255);
                     }
                     colSchema.addProp("dbColumnName", col != null ? col.getColumnName() : colName);
@@ -619,7 +619,6 @@ public class KcopHandler extends AbstractHandler {
             return fields.endRecord();
         }
 
-        // 3) Fallback to GG metadata isKeyCol() with type inference
         if (tableMetaData != null) {
             LinkedHashMap<String, Schema> selected = new LinkedHashMap<>();
             //System.out.println(">>> [KcopHandler] TableMetaData numColumns=" + tableMetaData.getNumColumns());
