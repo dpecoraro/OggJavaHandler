@@ -39,9 +39,11 @@ public class AvroSchemaManager {
         Schema cached = schemaCache.get(tableName);
         if (cached != null) return cached;
 
-        final String tableRecordName = tableName != null && tableName.contains(".")
+        final String rawName = tableName != null && tableName.contains(".")
                 ? tableName.substring(tableName.lastIndexOf('.') + 1)
                 : tableName;
+        final String tableRecordName = rawName != null ? rawName.toUpperCase() : "UNKNOWN";
+        System.out.println(">>> [AvroSchemaManager] Value schema table record name: raw='" + rawName + "' -> upper='" + tableRecordName + "'");
 
         // Build table record schema
         List<Field> tableFields = new ArrayList<>();

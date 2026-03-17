@@ -15,7 +15,7 @@
         <maven.compiler.target>11</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <ogg.version>21.9.0</ogg.version>
-        <ogg.home>/Users/dpecoraro/Downloads</ogg.home>
+        <ogg.home>${project.basedir}</ogg.home>
     </properties>
 
     <dependencies>

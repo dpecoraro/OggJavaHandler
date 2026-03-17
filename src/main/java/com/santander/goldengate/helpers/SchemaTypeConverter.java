@@ -60,20 +60,20 @@ public class SchemaTypeConverter {
                         if (v instanceof Number && ((Number) v).intValue() > 0) {
                             byteLen = ((Number) v).intValue();
 
-                            // 🔥 heurística UTF-8 (3 bytes por char)
+                            // UTF-8 heuristic: 3 bytes per char
                             if (byteLen % 3 == 0) {
                                 charLen = byteLen / 3;
                             } else {
-                                charLen = byteLen; // fallback defensivo
+                                charLen = byteLen;
                             }
                         }
                     } catch (Exception ignore) {
                     }
                 }
+                System.out.println(">>> [ValueSchema] UTF-8 length fix: column=" + f.name() + " byteLen=" + byteLen + " charLen(byteLen/3)=" + charLen);
 
                 Schema s2 = Schema.create(Schema.Type.STRING);
 
-                // copia tudo MENOS length antigo
                 copySchemaPropsExcept(effective, s2, "length");
 
                 s2.addProp("length", String.valueOf(charLen));

@@ -559,15 +559,16 @@ public class KcopHandler extends AbstractHandler {
                 ? table.substring(table.lastIndexOf('.') + 1)
                 : table;
         String tableUpper = shortName != null ? shortName.toUpperCase() : "TABLE";
+        System.out.println(">>> [KeySchema] Building key schema for table='" + table + "' -> recordName='" + tableUpper + "'");
         SchemaBuilder.FieldAssembler<Schema> fields = SchemaBuilder
                 .record(tableUpper) 
                 .namespace("key.SOURCEDB.BALP")
                 .fields();
-        //System.out.println(">>> [KcopHandler] Checking key columns override for precedence for " + keyColumnsOverrides.keySet());
+        System.out.println(">>> [KeySchema] Available override keys: " + keyColumnsOverrides.keySet());
         String[] overrideCols = keyColumnsOverrides.get(tableUpper);
         try {
             if (overrideCols != null && overrideCols.length > 0) {
-                //System.out.println(">>> [KcopHandler] Using key columns override for " + tableUpper + ": " + Arrays.toString(overrideCols));
+                System.out.println(">>> [KeySchema] PATH=override | table=" + tableUpper + " columns=" + Arrays.toString(overrideCols));
                 for (String colName : overrideCols) {
                     ColumnMetaData col = schemaTypeConverter.findColumnByName(tableMetaData, colName);
                     Schema colSchema = Schema.create(Type.STRING);
@@ -579,30 +580,33 @@ public class KcopHandler extends AbstractHandler {
                         colSchema.addProp("length", 10);
                     } else {
                         colSchema.addProp("logicalType", "CHARACTER");
-                        var colLength = col != null ? charFormatHandler.safeGetCharLength(col) : 255;
-                        System.out.println("Char length for column " + colName + ": " + colLength );
-                        System.out.println("Char length no padrao certo: " + colLength / 3 );
-                        colSchema.addProp("length", col != null ? charFormatHandler.safeGetCharLength(col) : 255);
+                        int byteLen = col != null ? charFormatHandler.safeGetCharLength(col) : 255;
+                        int charLen = (byteLen > 0 && byteLen % 3 == 0) ? byteLen / 3 : byteLen;
+                        System.out.println(">>> [KeySchema] override column=" + colName + " byteLen=" + byteLen + " charLen(byteLen/3)=" + charLen);
+                        colSchema.addProp("length", charLen);
                     }
                     colSchema.addProp("dbColumnName", col != null ? col.getColumnName() : colName);
-                    fields.name(colName).type(colSchema).withDefault("");
+                    fields.name(colName).doc("").type(colSchema).withDefault("");
                 }
                 return fields.endRecord();
             }
         } catch (Exception e) {
-            System.err.println(">>> [KcopHandler] Error processing key columns override for " + tableUpper + ": " + e.getMessage());
+            System.err.println(">>> [KeySchema] Error processing key columns override for " + tableUpper + ": " + e.getMessage());
         }
 
-        // 2) Default spec per table (fixed lengths)
+        // 2) Default spec per table (fixed lengths), fallback to "default" key
         LinkedHashMap<String, Integer> defaults = defaultKeyColumnSpecs.get(tableUpper);
+        if (defaults == null) {
+            System.out.println(">>> [KeySchema] No specific default spec for '" + tableUpper + "', falling back to 'default' key");
+            defaults = defaultKeyColumnSpecs.get("default");
+        }
         if (defaults != null && !defaults.isEmpty()) {
-            //System.out.println(">>> [KcopHandler] Using default key spec for " + tableUpper + ": " + defaults.keySet());
+            System.out.println(">>> [KeySchema] PATH=defaultSpec | table=" + tableUpper + " columns=" + defaults.keySet());
             for (Map.Entry<String, Integer> e : defaults.entrySet()) {
                 String colName = e.getKey();
                 int len = e.getValue() != null ? e.getValue() : 255;
                 ColumnMetaData col = schemaTypeConverter.findColumnByName(tableMetaData, colName);
                 Schema colSchema = Schema.create(Type.STRING);
-                // Heuristic: assign TIMESTAMP/DATE if name suggests
                 if (colName.toUpperCase().startsWith("DH_") || "DH_TRMT".equalsIgnoreCase(colName)) {
                     colSchema.addProp("logicalType", "TIMESTAMP");
                     colSchema.addProp("length", 32);
@@ -612,29 +616,26 @@ public class KcopHandler extends AbstractHandler {
                 } else {
                     colSchema.addProp("logicalType", "CHARACTER");
                     colSchema.addProp("length", len);
+                    System.out.println(">>> [KeySchema] defaultSpec column=" + colName + " fixedCharLen=" + len);
                 }
                 colSchema.addProp("dbColumnName", col != null ? col.getColumnName() : colName);
-                fields.name(colName).type(colSchema).withDefault("");
+                fields.name(colName).doc("").type(colSchema).withDefault("");
             }
             return fields.endRecord();
         }
 
         if (tableMetaData != null) {
             LinkedHashMap<String, Schema> selected = new LinkedHashMap<>();
-            //System.out.println(">>> [KcopHandler] TableMetaData numColumns=" + tableMetaData.getNumColumns());
+            System.out.println(">>> [KeySchema] PATH=ggMetadata | table=" + tableUpper + " numColumns=" + tableMetaData.getNumColumns());
             for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
                 ColumnMetaData col = tableMetaData.getColumnMetaData(i);
                 if (col == null) {
-                    //System.out.println(">>> [KcopHandler] col[index=" + i + "] is null");
                     continue;
                 }
-                // Only include columns marked as key by GoldenGate (e.g. KEYCOLS in Replicat)
                 if (!col.isKeyCol()) {
-                    // optional debug
-                    //System.out.println(">>> [KcopHandler] col=" + col.getColumnName() + " isKey=false");
                     continue;
                 }
-                //System.out.println(">>> [KcopHandler] col=" + col.getColumnName() + " isKey=true");
+                System.out.println(">>> [KeySchema] GG key column found: " + col.getColumnName() + " isKey=true");
 
                 String colName = col.getColumnName();
                 String typeName = col.getDataType() != null ? col.getDataType().toString().toUpperCase() : "";
@@ -642,7 +643,6 @@ public class KcopHandler extends AbstractHandler {
                 int scale = getNumericScale(col);
 
                 Schema colSchema;
-                // Prefer name-based heuristic first to match DH_/DT_ keys
                 if (colName.toUpperCase().startsWith("DH_") || "DH_TRMT".equalsIgnoreCase(colName)) {
                     colSchema = Schema.create(Type.STRING);
                     colSchema.addProp("logicalType", "TIMESTAMP");
@@ -667,18 +667,21 @@ public class KcopHandler extends AbstractHandler {
                 } else {
                     colSchema = Schema.create(Type.STRING);
                     colSchema.addProp("logicalType", "CHARACTER");
-                    colSchema.addProp("length", charFormatHandler.safeGetCharLength(col));
+                    int byteLen = charFormatHandler.safeGetCharLength(col);
+                    int charLen = (byteLen > 0 && byteLen % 3 == 0) ? byteLen / 3 : byteLen;
+                    System.out.println(">>> [KeySchema] ggMeta column=" + colName + " byteLen=" + byteLen + " charLen(byteLen/3)=" + charLen);
+                    colSchema.addProp("length", charLen);
                 }
                 colSchema.addProp("dbColumnName", colName);
                 selected.put(colName, colSchema);
             }
             if (!selected.isEmpty()) {
-                //System.out.println(">>> [KcopHandler] Using GG key columns for " + tableUpper + ": " + selected.keySet());
+                System.out.println(">>> [KeySchema] Using GG key columns for " + tableUpper + ": " + selected.keySet());
                 for (Map.Entry<String, Schema> e : selected.entrySet()) {
-                    fields.name(e.getKey()).type(e.getValue()).withDefault(schemaTypeConverter.getDefaultValue(e.getValue()));
+                    fields.name(e.getKey()).doc("").type(e.getValue()).withDefault(schemaTypeConverter.getDefaultValue(e.getValue()));
                 }
             } else {
-                //System.out.println(">>> [KcopHandler] Warning: no key columns detected via isKeyCol() for " + tableUpper);
+                System.out.println(">>> [KeySchema] WARNING: no key columns detected via isKeyCol() for " + tableUpper);
             }
         }
         return fields.endRecord();
