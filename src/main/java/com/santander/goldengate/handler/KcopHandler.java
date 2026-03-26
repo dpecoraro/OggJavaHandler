@@ -70,14 +70,7 @@ public class KcopHandler extends AbstractHandler {
     private Map<String, LinkedHashMap<String, Integer>> defaultKeyColumnSpecs = new HashMap<>();
 
     public KcopHandler() {
-        //System.out.println(">>> [KcopHandler] Constructor called");
         this.charFormatHandler = new CharFormatHandler();
-        LinkedHashMap<String, Integer> table = new LinkedHashMap<>();
-        table.put("CD_BANC", 4);
-        table.put("CD_CENT_CPTU", 4);
-        table.put("AN_PROP", 4);
-        table.put("NR_SOLI", 8);
-        defaultKeyColumnSpecs.put("default", table);
     }
 
     public void setKafkaProducerConfigFile(String kafkaProducerConfigFile) {
@@ -594,11 +587,10 @@ public class KcopHandler extends AbstractHandler {
             System.err.println(">>> [KeySchema] Error processing key columns override for " + tableUpper + ": " + e.getMessage());
         }
 
-        // 2) Default spec per table (fixed lengths), fallback to "default" key
+        // 2) Default spec per table (fixed lengths)
         LinkedHashMap<String, Integer> defaults = defaultKeyColumnSpecs.get(tableUpper);
         if (defaults == null) {
-            System.out.println(">>> [KeySchema] No specific default spec for '" + tableUpper + "', falling back to 'default' key");
-            defaults = defaultKeyColumnSpecs.get("default");
+            System.out.println(">>> [KeySchema] No defaultKeyColumnSpecs for '" + tableUpper + "', falling through to GG metadata");
         }
         if (defaults != null && !defaults.isEmpty()) {
             System.out.println(">>> [KeySchema] PATH=defaultSpec | table=" + tableUpper + " columns=" + defaults.keySet());
