@@ -3,9 +3,9 @@ package com.santander.goldengate.helpers;
 import java.lang.reflect.Method;
 import java.util.Map;
 
+import org.apache.avro.JsonProperties;
 import org.apache.avro.Schema;
 import org.apache.avro.Schema.Type;
-import org.apache.avro.SchemaBuilder;
 
 import oracle.goldengate.datasource.meta.ColumnMetaData;
 import oracle.goldengate.datasource.meta.TableMetaData;
@@ -25,11 +25,8 @@ public class SchemaTypeConverter {
         }
     }
 
-        public Schema cloneRecordWithCharLengths(Schema record, TableMetaData tmd) {
-        SchemaBuilder.FieldAssembler<Schema> fa = SchemaBuilder
-                .record(record.getName())
-                .namespace(record.getNamespace())
-                .fields();
+    public Schema cloneRecordWithCharLengths(Schema record, TableMetaData tmd) {
+        java.util.List<Schema.Field> clonedFields = new java.util.ArrayList<>();
 
         for (Schema.Field f : record.getFields()) {
             Schema fs = f.schema();
@@ -76,7 +73,7 @@ public class SchemaTypeConverter {
 
                 copySchemaPropsExcept(effective, s2, "length");
 
-                s2.addProp("length", String.valueOf(charLen));
+                s2.addProp("length", charLen);
 
                 newEffective = s2;
             }
@@ -88,13 +85,12 @@ public class SchemaTypeConverter {
                 newFieldSchema = newEffective;
             }
 
-            Schema.Field nf = new Schema.Field(f.name(), newFieldSchema, f.doc(), f.defaultVal());
-            copyProps(f, nf);
-            fa = fa.name(nf.name()).type(nf.schema()).withDefault(nf.defaultVal());
+            clonedFields.add(copyField(f, newFieldSchema));
         }
 
-        Schema out = fa.endRecord();
+        Schema out = Schema.createRecord(record.getName(), record.getDoc(), record.getNamespace(), record.isError(), clonedFields);
         copyRecordProps(record, out);
+        copySchemaAliases(record, out);
         return out;
     }
 
@@ -113,7 +109,7 @@ public class SchemaTypeConverter {
                 continue;
             }
             if (e.getValue() != null) {
-                to.addProp(e.getKey(), String.valueOf(e.getValue()));
+                to.addProp(e.getKey(), e.getValue());
             }
         }
     }
@@ -124,7 +120,7 @@ public class SchemaTypeConverter {
         }
         for (Map.Entry<String, Object> e : from.getObjectProps().entrySet()) {
             if (e.getValue() != null) {
-                to.addProp(e.getKey(), String.valueOf(e.getValue()));
+                to.addProp(e.getKey(), e.getValue());
             }
         }
     }
@@ -132,7 +128,7 @@ public class SchemaTypeConverter {
     private void copyProps(Schema.Field from, Schema.Field to) {
         for (Map.Entry<String, Object> e : from.getObjectProps().entrySet()) {
             if (e.getValue() != null) {
-                to.addProp(e.getKey(), String.valueOf(e.getValue()));
+                to.addProp(e.getKey(), e.getValue());
             }
         }
     }
@@ -166,26 +162,25 @@ public class SchemaTypeConverter {
         Schema clonedTable = cloneRecordWithCharLengths(tableRecord, tmd);
 
         // agora recria o envelope record trocando o tipo dos campos beforeImage/afterImage
-        SchemaBuilder.FieldAssembler<Schema> fa = SchemaBuilder
-                .record(envelope.getName())
-                .namespace(envelope.getNamespace())
-                .fields();
+        java.util.List<Schema.Field> rebuiltFields = new java.util.ArrayList<>();
 
         for (Schema.Field f : envelope.getFields()) {
             if ("beforeImage".equals(f.name()) || "afterImage".equals(f.name())) {
                 Schema newFieldSchema = replaceRecordInsideUnion(f.schema(), clonedTable);
-                Schema.Field nf = new Schema.Field(f.name(), newFieldSchema, f.doc(), f.defaultVal());
-                copyProps(f, nf);
-                fa = fa.name(nf.name()).type(nf.schema()).withDefault(nf.defaultVal());
+                rebuiltFields.add(copyField(f, newFieldSchema));
             } else {
-                Schema.Field nf = new Schema.Field(f.name(), f.schema(), f.doc(), f.defaultVal());
-                copyProps(f, nf);
-                fa = fa.name(nf.name()).type(nf.schema()).withDefault(nf.defaultVal());
+                rebuiltFields.add(copyField(f, f.schema()));
             }
         }
 
-        Schema rebuilt = fa.endRecord();
+        Schema rebuilt = Schema.createRecord(
+                envelope.getName(),
+                envelope.getDoc(),
+                envelope.getNamespace(),
+                envelope.isError(),
+                rebuiltFields);
         copyRecordProps(envelope, rebuilt);
+        copySchemaAliases(envelope, rebuilt);
         return rebuilt;
     }
 
@@ -238,7 +233,7 @@ public class SchemaTypeConverter {
         return null;
     }
 
-        public ColumnMetaData findColumnByName(TableMetaData tmd, String name) {
+    public ColumnMetaData findColumnByName(TableMetaData tmd, String name) {
         if (tmd == null || name == null) {
             return null;
         }
@@ -250,6 +245,38 @@ public class SchemaTypeConverter {
             }
         }
         return null;
+    }
+
+    private Schema.Field copyField(Schema.Field from, Schema newSchema) {
+        Schema.Field copy = new Schema.Field(
+                from.name(),
+                newSchema,
+                from.doc(),
+                resolveDefaultValue(from),
+                from.order());
+        copyProps(from, copy);
+        copyFieldAliases(from, copy);
+        return copy;
+    }
+
+    private Object resolveDefaultValue(Schema.Field field) {
+        if (!field.hasDefaultValue()) {
+            return null;
+        }
+        Object defaultValue = field.defaultVal();
+        return defaultValue == JsonProperties.NULL_VALUE ? Schema.Field.NULL_DEFAULT_VALUE : defaultValue;
+    }
+
+    private void copySchemaAliases(Schema from, Schema to) {
+        for (String alias : from.getAliases()) {
+            to.addAlias(alias);
+        }
+    }
+
+    private void copyFieldAliases(Schema.Field from, Schema.Field to) {
+        for (String alias : from.aliases()) {
+            to.addAlias(alias);
+        }
     }
 
 }

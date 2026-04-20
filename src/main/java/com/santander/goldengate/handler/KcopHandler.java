@@ -69,6 +69,20 @@ public class KcopHandler extends AbstractHandler {
     private CharFormatHandler charFormatHandler;
     private Map<String, LinkedHashMap<String, Integer>> defaultKeyColumnSpecs = new HashMap<>();
 
+    private static final class KeyFieldSpec {
+        private final int keyIndex;
+        private final int tableIndex;
+        private final String columnName;
+        private final Schema schema;
+
+        private KeyFieldSpec(int keyIndex, int tableIndex, String columnName, Schema schema) {
+            this.keyIndex = keyIndex;
+            this.tableIndex = tableIndex;
+            this.columnName = columnName;
+            this.schema = schema;
+        }
+    }
+
     public KcopHandler() {
         this.charFormatHandler = new CharFormatHandler();
     }
@@ -617,7 +631,7 @@ public class KcopHandler extends AbstractHandler {
         }
 
         if (tableMetaData != null) {
-            LinkedHashMap<String, Schema> selected = new LinkedHashMap<>();
+            java.util.List<KeyFieldSpec> selected = new java.util.ArrayList<>();
             System.out.println(">>> [KeySchema] PATH=ggMetadata | table=" + tableUpper + " numColumns=" + tableMetaData.getNumColumns());
             for (int i = 0; i < tableMetaData.getNumColumns(); i++) {
                 ColumnMetaData col = tableMetaData.getColumnMetaData(i);
@@ -665,13 +679,20 @@ public class KcopHandler extends AbstractHandler {
                     colSchema.addProp("length", charLen);
                 }
                 colSchema.addProp("dbColumnName", colName);
-                selected.put(colName, colSchema);
+                selected.add(new KeyFieldSpec(safeGetKeyIndex(col), i, colName, colSchema));
             }
             if (!selected.isEmpty()) {
-                System.out.println(">>> [KeySchema] Using GG key columns for " + tableUpper + ": " + selected.keySet());
-                for (Map.Entry<String, Schema> e : selected.entrySet()) {
-                    fields.name(e.getKey()).doc("").type(e.getValue()).withDefault(schemaTypeConverter.getDefaultValue(e.getValue()));
+                java.util.List<KeyFieldSpec> orderedFields = KeyFieldOrderResolver.order(
+                        selected,
+                        spec -> spec.keyIndex,
+                        spec -> spec.tableIndex);
+                java.util.List<String> orderedNames = new java.util.ArrayList<>();
+                for (KeyFieldSpec spec : orderedFields) {
+                    orderedNames.add(spec.columnName);
+                    fields.name(spec.columnName).doc("").type(spec.schema)
+                            .withDefault(schemaTypeConverter.getDefaultValue(spec.schema));
                 }
+                System.out.println(">>> [KeySchema] Using GG key columns for " + tableUpper + ": " + orderedNames);
             } else {
                 System.out.println(">>> [KeySchema] WARNING: no key columns detected via isKeyCol() for " + tableUpper);
             }
@@ -772,6 +793,17 @@ public class KcopHandler extends AbstractHandler {
             return tableMetaData.getColumnMetaData(index);
         } catch (IndexOutOfBoundsException ex) {
             return null;
+        }
+    }
+
+    private int safeGetKeyIndex(ColumnMetaData col) {
+        if (col == null) {
+            return -1;
+        }
+        try {
+            return col.getKeyIndex();
+        } catch (Exception ignore) {
+            return -1;
         }
     }
 

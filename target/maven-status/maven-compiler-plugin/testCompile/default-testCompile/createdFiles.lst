@@ -1,2 +1,7 @@
+com/santander/goldengate/handler/KeyFieldOrderResolverTest$TestField.class
+oracle/goldengate/util/ConfigException.class
+com/santander/goldengate/helpers/SchemaTypeConverterTest.class
 com/santander/goldengate/handler/KcopHandlerTest.class
+com/santander/goldengate/handler/KeyFieldOrderResolverTest.class
 com/santander/goldengate/handler/AvroSchemaManagerTest.class
+oracle/goldengate/util/GGException.class
