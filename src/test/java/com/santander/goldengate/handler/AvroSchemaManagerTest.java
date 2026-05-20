@@ -78,11 +78,11 @@ public class AvroSchemaManagerTest {
     void oracleDateUsesDateLogicalTypeAndLengthTen() {
         SchemaTypeConverter converter = new SchemaTypeConverter();
         AvroSchemaManager mgr = new AvroSchemaManager("value.DB", converter);
-        TableMetaData tableMetaData = tableMetaData(dateColumn("DT_PROP", 0));
+        TableMetaData tableMetaData = tableMetaData(dateColumn("DT_VENC_PGTO_QRCD", 0));
 
         Schema envelope = mgr.getOrCreateAvroSchema("DB.SCH.T1", tableMetaData);
         Schema tableSchema = envelope.getField("beforeImage").schema().getTypes().get(1);
-        Schema fieldSchema = tableSchema.getField("DT_PROP").schema();
+        Schema fieldSchema = tableSchema.getField("DT_VENC_PGTO_QRCD").schema();
 
         assertEquals(Type.STRING, fieldSchema.getType());
         assertEquals("DATE", fieldSchema.getProp("logicalType"));
@@ -94,7 +94,7 @@ public class AvroSchemaManagerTest {
     void fixedPointScaleZeroUsesSourcePrecisionAndNumericType() {
         SchemaTypeConverter converter = new SchemaTypeConverter();
         AvroSchemaManager mgr = new AvroSchemaManager("value.DB", converter);
-        TableMetaData tableMetaData = tableMetaData(fixedPointColumn("QT_DIA_ATRS", 0, 3, 0));
+        TableMetaData tableMetaData = tableMetaData(fixedPointColumn("QT_DIA_ATRS", 0, 3, 0, 3));
 
         Schema envelope = mgr.getOrCreateAvroSchema("DB.SCH.T1", tableMetaData);
         Schema tableSchema = envelope.getField("beforeImage").schema().getTypes().get(1);
@@ -108,20 +108,37 @@ public class AvroSchemaManagerTest {
     }
 
     @Test
-    void jobUserAndUserStayOnlyInsideTableImageWhenTheyAreSourceColumns() {
+    void fixedPointUsesColumnLengthWhenPrecisionIsMissing() {
+        SchemaTypeConverter converter = new SchemaTypeConverter();
+        AvroSchemaManager mgr = new AvroSchemaManager("value.DB", converter);
+        TableMetaData tableMetaData = tableMetaData(fixedPointColumn("QT_DIA_ATRS", 0, 0, 0, 3));
+
+        Schema envelope = mgr.getOrCreateAvroSchema("DB.SCH.T1", tableMetaData);
+        Schema tableSchema = envelope.getField("beforeImage").schema().getTypes().get(1);
+        Schema fieldSchema = tableSchema.getField("QT_DIA_ATRS").schema();
+
+        assertEquals(Type.INT, fieldSchema.getType());
+        assertEquals(3, ((Number) fieldSchema.getObjectProp("precision")).intValue());
+        assertEquals(0, ((Number) fieldSchema.getObjectProp("scale")).intValue());
+    }
+
+    @Test
+    void jobUserAndUserStayOnlyInEnvelopeEvenWhenGoldenGateMetadataListsThemAsColumns() {
         SchemaTypeConverter converter = new SchemaTypeConverter();
         AvroSchemaManager mgr = new AvroSchemaManager("value.DB", converter);
         TableMetaData tableMetaData = tableMetaData(
-                charColumn("A_JOBUSER", 0, 4000),
-                charColumn("A_USER", 1, 4000));
+                charColumn("CD_BANC", 0, 4),
+                charColumn("A_JOBUSER", 1, 4000),
+                charColumn("A_USER", 2, 4000));
 
         Schema envelope = mgr.getOrCreateAvroSchema("DB.SCH.T1", tableMetaData);
         Schema tableSchema = envelope.getField("afterImage").schema().getTypes().get(1);
 
-        assertNull(envelope.getField("A_JOBUSER"));
-        assertNull(envelope.getField("A_USER"));
-        assertNotNull(tableSchema.getField("A_JOBUSER"));
-        assertNotNull(tableSchema.getField("A_USER"));
+        assertNotNull(envelope.getField("A_JOBUSER"));
+        assertNotNull(envelope.getField("A_USER"));
+        assertNull(tableSchema.getField("A_JOBUSER"));
+        assertNull(tableSchema.getField("A_USER"));
+        assertNotNull(tableSchema.getField("CD_BANC"));
     }
 
     private TableMetaData tableMetaData(ColumnMetaData... columns) {
@@ -131,20 +148,20 @@ public class AvroSchemaManagerTest {
     private ColumnMetaData dateColumn(String name, int index) {
         ColumnDataType type = new ColumnDataType();
         type.setDataType(DataTypes.T_DateTime);
-        type.setNativeDataType("DATE");
-        type.setColumnLength(10);
-        type.setByteSize(10);
+        type.setNativeDataType("TIMESTAMP");
+        type.setColumnLength(32);
+        type.setByteSize(32);
         return new ColumnMetaData(name, index, type, true, false, -1, false, -1);
     }
 
-    private ColumnMetaData fixedPointColumn(String name, int index, long precision, int scale) {
+    private ColumnMetaData fixedPointColumn(String name, int index, long precision, int scale, long columnLength) {
         ColumnDataType type = new ColumnDataType();
         type.setDataType(DataTypes.T_FixedPoint);
         type.setNativeDataType("NUMBER");
         type.setPrecision(precision);
         type.setScale(scale);
-        type.setColumnLength(precision);
-        type.setByteSize(precision);
+        type.setColumnLength(columnLength);
+        type.setByteSize(columnLength);
         return new ColumnMetaData(name, index, type, true, false, -1, false, -1);
     }
 

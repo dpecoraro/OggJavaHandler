@@ -56,6 +56,12 @@ public class AvroSchemaManager {
                 ColumnMetaData cm = safeGetColumnMetaData(tableMetaData, idx);
                 if (cm == null) break;
                 String colName = cm.getColumnName();
+                if (isEnvelopeAuditOnlyField(colName)) {
+                    // O CDC original mantém estes campos somente no envelope.
+                    // O GoldenGate os expõe na metadata da tabela, mas incluí-los
+                    // aqui duplicava A_JOBUSER/A_USER dentro de before/afterImage.
+                    continue;
+                }
                 Schema colSchema = buildColumnSchema(cm);
                 Object defaultValue = schemaTypeConverter.getDefaultValue(colSchema);
                 tableFields.add(new Field(colName, colSchema, "", defaultValue));
@@ -72,9 +78,8 @@ public class AvroSchemaManager {
         envelopeFields.add(nullableUnionField("A_ENTTYP", Schema.create(Type.STRING))); // added back
         envelopeFields.add(nullableUnionField("A_CCID", Schema.create(Type.STRING)));   // added back
         envelopeFields.add(nullableUnionField("A_TIMSTAMP", Schema.create(Type.STRING)));
-        // A_JOBUSER/A_USER can be real table columns. Keeping them in the envelope
-        // duplicated those fields outside afterImage/beforeImage, so they now stay
-        // only where the source metadata says they belong: inside the table image.
+        envelopeFields.add(nullableUnionField("A_JOBUSER", Schema.create(Type.STRING)));
+        envelopeFields.add(nullableUnionField("A_USER", Schema.create(Type.STRING)));
 
         Schema envelopeSchema = Schema.createRecord("AuditRecord", "", namespacePrefix, false, envelopeFields);
         schemaCache.put(tableName, envelopeSchema);
@@ -145,9 +150,10 @@ public class AvroSchemaManager {
         } else if (isFloatingPoint(dataTypeEnum, dataTypeName)) {
             baseSchema = Schema.create(Type.DOUBLE);
             logicalType = "DOUBLE";
-        } else if (isDate(nativeType, dataTypeName)) {
-            // Oracle DATE was being classified as TIMESTAMP by the generic
-            // DateTime metadata. Native type DATE must stay DATE with length 10.
+        } else if (isDate(colName, nativeType, dataTypeName)) {
+            // Algumas colunas Oracle DATE chegam como DateTime/TIMESTAMP na
+            // metadata do GoldenGate. No CDC original, campos DT_* sao DATE
+            // com length 10, entao a convencao do nome tambem precisa valer.
             baseSchema = Schema.create(Type.STRING);
             logicalType = "DATE";
         } else if (isTimeOrTimestamp(cm, dataTypeName)) {
@@ -183,6 +189,10 @@ public class AvroSchemaManager {
         return baseSchema;
     }
 
+    private boolean isEnvelopeAuditOnlyField(String colName) {
+        return "A_JOBUSER".equalsIgnoreCase(colName) || "A_USER".equalsIgnoreCase(colName);
+    }
+
     private boolean isFixedPoint(DataTypes dataTypeEnum, String dataTypeName) {
         return dataTypeEnum == DataTypes.T_FixedPoint
                 || dataTypeName.contains("NUMBER")
@@ -204,12 +214,18 @@ public class AvroSchemaManager {
                 || dataTypeName.contains("REAL");
     }
 
-    private boolean isDate(String nativeType, String dataTypeName) {
-        return "DATE".equals(nativeType) || dataTypeName.contains("DATE") && !dataTypeName.contains("TIME");
+    private boolean isDate(String colName, String nativeType, String dataTypeName) {
+        return isDateColumnName(colName)
+                || "DATE".equals(nativeType)
+                || dataTypeName.contains("DATE") && !dataTypeName.contains("TIME");
     }
 
     private boolean isTimeOrTimestamp(ColumnMetaData cm, String dataTypeName) {
         return dataTypeName.contains("TIME") || cm.isTimestamp() || cm.isTime();
+    }
+
+    private boolean isDateColumnName(String colName) {
+        return colName != null && colName.toUpperCase().startsWith("DT_");
     }
 
     private int resolvePrecision(ColumnMetaData cm, ColumnDataType columnDataType, String dataTypeRaw) {
@@ -225,6 +241,12 @@ public class AvroSchemaManager {
                 } catch (NumberFormatException ignore) {
                 }
             }
+        }
+        if (precision <= 0 && columnDataType != null && columnDataType.getColumnLength() > 0) {
+            precision = columnDataType.getColumnLength();
+        }
+        if (precision <= 0 && columnDataType != null && columnDataType.getByteSize() > 0) {
+            precision = columnDataType.getByteSize();
         }
         return precision > 0 && precision <= Integer.MAX_VALUE ? (int) precision : -1;
     }
