@@ -97,7 +97,9 @@ Arquivo: [src/main/java/com/santander/goldengate/handler/SchemaRegistryClient.ja
 
 Cliente simples para registrar schemas no Schema Registry via REST.
 
-No `KcopHandler`, a inicialização ocorre via `schemaRegistryClient.init(kafkaProps)`. O registro em si está presente, mas comentado; na prática, **o `KafkaAvroSerializer` também consegue registrar automaticamente**, desde que `schema.registry.url` esteja definido.
+No `KcopHandler`, a inicialização ocorre via `schemaRegistryClient.init(kafkaProps)`.
+O handler registra cada versão distinta de schema por subject e propaga falhas de
+registro; o `KafkaAvroSerializer` também utiliza `schema.registry.url`.
 
 ### Helpers (`helpers/*`)
 Pasta: [src/main/java/com/santander/goldengate/helpers/](src/main/java/com/santander/goldengate/helpers/)
@@ -158,6 +160,40 @@ Testes existentes:
 - **Schema Registry:** o handler tenta garantir `schema.registry.url` (usando fallbacks `value.converter.schema.registry.url` / `key.converter.schema.registry.url`).
 - **Key do Kafka:** hoje o producer usa **key String** (não Avro). Existe um “schema de key” construído, mas ele é usado para definir regras de padding/tipos e não é enviado como Avro.
 - **Tópico:** é resolvido por template (`topicMappingTemplate`) via `resolveTopic(...)`.
+
+Propriedades operacionais adicionais no arquivo do producer Kafka:
+
+```properties
+# Aceita INFO, DEBUG/FINE, WARN/WARNING e ERROR/SEVERE.
+gg.handler.kcoph.logLevel=INFO
+
+# Publica o reportStatus a cada N operações; 0 desabilita.
+gg.handler.kcoph.statusLogInterval=10000
+```
+
+O `reportStatus()` informa a quantidade de operações processadas. Logs em `INFO`
+não incluem payload, chave ou detalhes por coluna.
+
+### Contrato de tipos compatível com CDC DB2
+
+- `DECIMAL(p,0)`: `INT` até 9 dígitos, `LONG` até 18 e `STRING` a partir de 19.
+- `DECIMAL(p,s>0)`: `STRING`, preservando `precision` e `scale`.
+- `SMALLINT`: `INT`, logical type `SMALLINT`, default numérico `0`.
+- `DATE`: `STRING` com logical type `DATE` e length 10.
+- `TIMESTAMP`: `STRING` com logical type `TIMESTAMP` e length 32.
+- `CHAR/CHARACTER`: usa o comprimento lógico declarado, sem divisão heurística por três.
+
+Precisão decimal e comprimento de texto ausentes interrompem a criação do schema,
+evitando publicar contratos aproximados. O contrato completo usado nos testes está
+em `src/test/resources/contracts/db2-reference-schema.avsc`.
+
+Os schemas validados no relatório `index-prd 2 (2).html` foram extraídos para
+`src/main/resources/contracts/db2-schema-contracts.json`. O HTML não é necessário
+no build nem em runtime e pode ser removido do repositório. Para as 166 tabelas do
+contrato, o handler usa diretamente o schema DB2 de valor e, quando disponível, o
+schema DB2 de chave. Isso preserva inclusive contratos diretos sem envelope, `TIME`,
+`VARCHAR`, SMALLINT/INTEGER sem precision/scale e exceções específicas por coluna.
+Tabelas ausentes no contrato continuam usando o mapeamento dinâmico por metadata.
 
 ---
 

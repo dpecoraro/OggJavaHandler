@@ -39,13 +39,7 @@ public class KafkaPublisherImpl implements KafkaPublisher {
             throw new IllegalStateException("Producer not initialized");
         }
         ProducerRecord<String, byte[]> record = new ProducerRecord<>(topic, key, payload);
-        producer.send(record, (md, ex) -> {
-            if (ex != null) {
-                System.err.println("[KafkaPublisherImpl] Send error topic=" + topic + " key=" + key + " msg=" + ex.getMessage());
-            } else {
-                //System.out.println(">>> [KafkaPublisherImpl] Sent topic=" + md.topic() + " partition=" + md.partition() + " offset=" + md.offset());
-            }
-        });
+        producer.send(record);
     }
 
     @Override

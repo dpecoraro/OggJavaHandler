@@ -1,5 +1,7 @@
 package com.santander.goldengate.handler;
 
+import java.io.InputStream;
+
 import org.apache.avro.Schema;
 import org.apache.avro.Schema.Field;
 import org.apache.avro.Schema.Type;
@@ -9,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Test;
@@ -56,6 +59,22 @@ public class AvroSchemaManagerTest {
         Schema s1 = mgr.getOrCreateAvroSchema("DB.SCH.TBLX", null);
         Schema s2 = mgr.getOrCreateAvroSchema("DB.SCH.TBLX", null);
         assertSame(s1, s2, "Schema should be cached and reused");
+    }
+
+    @Test
+    void clearCacheRebuildsSchemaAfterMetadataChange() {
+        SchemaTypeConverter converter = new SchemaTypeConverter();
+        AvroSchemaManager mgr = new AvroSchemaManager("value.DB", converter);
+        Schema first = mgr.getOrCreateAvroSchema(
+                "DB.SCH.T1", tableMetaData(charColumn("CD", 0, 1)));
+
+        mgr.clearCache();
+        Schema rebuilt = mgr.getOrCreateAvroSchema(
+                "DB.SCH.T1", tableMetaData(charColumn("CD", 0, 2)));
+
+        Schema rebuiltTable = rebuilt.getField("beforeImage").schema().getTypes().get(1);
+        assertEquals(2, rebuiltTable.getField("CD").schema().getObjectProp("length"));
+        assertFalse(first == rebuilt);
     }
 
     @Test
@@ -108,18 +127,14 @@ public class AvroSchemaManagerTest {
     }
 
     @Test
-    void fixedPointUsesColumnLengthWhenPrecisionIsMissing() {
+    void fixedPointFailsWhenPrecisionIsMissingInsteadOfUsingStorageLength() {
         SchemaTypeConverter converter = new SchemaTypeConverter();
         AvroSchemaManager mgr = new AvroSchemaManager("value.DB", converter);
         TableMetaData tableMetaData = tableMetaData(fixedPointColumn("QT_DIA_ATRS", 0, 0, 0, 3));
 
-        Schema envelope = mgr.getOrCreateAvroSchema("DB.SCH.T1", tableMetaData);
-        Schema tableSchema = envelope.getField("beforeImage").schema().getTypes().get(1);
-        Schema fieldSchema = tableSchema.getField("QT_DIA_ATRS").schema();
-
-        assertEquals(Type.INT, fieldSchema.getType());
-        assertEquals(3, ((Number) fieldSchema.getObjectProp("precision")).intValue());
-        assertEquals(0, ((Number) fieldSchema.getObjectProp("scale")).intValue());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> mgr.getOrCreateAvroSchema("DB.SCH.T1", tableMetaData));
     }
 
     @Test
@@ -141,6 +156,29 @@ public class AvroSchemaManagerTest {
         assertNotNull(tableSchema.getField("CD_BANC"));
     }
 
+    @Test
+    void generatedSchemaMatchesDb2ReferenceContract() throws Exception {
+        SchemaTypeConverter converter = new SchemaTypeConverter();
+        AvroSchemaManager mgr = new AvroSchemaManager("value.DB", converter);
+        TableMetaData tableMetaData = tableMetaData(
+                numericColumn("VL_INT", 0, 9, 0, "DECIMAL"),
+                numericColumn("VL_LONG", 1, 18, 0, "DECIMAL"),
+                numericColumn("VL_STRING", 2, 19, 0, "DECIMAL"),
+                numericColumn("VL_SCALE", 3, 8, 2, "DECIMAL"),
+                integerColumn("QT_SMALL", 4, "SMALLINT"),
+                temporalColumn("DT_EVENTO", 5, "TIMESTAMP"),
+                temporalColumn("DH_EVENTO", 6, "TIMESTAMP"),
+                charColumn("CD_FLAG", 7, 1));
+
+        Schema actual = mgr.getOrCreateAvroSchema("DB.SCH.T1", tableMetaData);
+        try (InputStream fixture = getClass().getResourceAsStream(
+                "/contracts/db2-reference-schema.avsc")) {
+            assertNotNull(fixture);
+            Schema expected = new Schema.Parser().parse(fixture);
+            assertEquals(expected, actual);
+        }
+    }
+
     private TableMetaData tableMetaData(ColumnMetaData... columns) {
         return new TableMetaData(new TableName("DB", "SCH", "T1"), java.util.Arrays.asList(columns));
     }
@@ -155,13 +193,38 @@ public class AvroSchemaManagerTest {
     }
 
     private ColumnMetaData fixedPointColumn(String name, int index, long precision, int scale, long columnLength) {
+        return numericColumn(name, index, precision, scale, "NUMBER");
+    }
+
+    private ColumnMetaData numericColumn(
+            String name, int index, long precision, int scale, String nativeType) {
         ColumnDataType type = new ColumnDataType();
         type.setDataType(DataTypes.T_FixedPoint);
-        type.setNativeDataType("NUMBER");
+        type.setNativeDataType(nativeType);
         type.setPrecision(precision);
         type.setScale(scale);
-        type.setColumnLength(columnLength);
-        type.setByteSize(columnLength);
+        type.setColumnLength(precision);
+        type.setByteSize(precision);
+        return new ColumnMetaData(name, index, type, true, false, -1, false, -1);
+    }
+
+    private ColumnMetaData integerColumn(String name, int index, String nativeType) {
+        ColumnDataType type = new ColumnDataType();
+        type.setDataType(DataTypes.T_Integer);
+        type.setNativeDataType(nativeType);
+        type.setPrecision(5);
+        type.setScale(0);
+        type.setColumnLength(2);
+        type.setByteSize(2);
+        return new ColumnMetaData(name, index, type, true, false, -1, false, -1);
+    }
+
+    private ColumnMetaData temporalColumn(String name, int index, String nativeType) {
+        ColumnDataType type = new ColumnDataType();
+        type.setDataType(DataTypes.T_DateTime);
+        type.setNativeDataType(nativeType);
+        type.setColumnLength(32);
+        type.setByteSize(32);
         return new ColumnMetaData(name, index, type, true, false, -1, false, -1);
     }
 

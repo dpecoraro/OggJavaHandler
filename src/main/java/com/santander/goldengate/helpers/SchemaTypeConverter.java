@@ -1,6 +1,5 @@
 package com.santander.goldengate.helpers;
 
-import java.lang.reflect.Method;
 import java.util.Map;
 
 import org.apache.avro.JsonProperties;
@@ -13,6 +12,14 @@ import oracle.goldengate.datasource.meta.TableMetaData;
 public class SchemaTypeConverter {
     public Object getDefaultValue(Schema schema) {
         Type type = schema.getType();
+        String logicalType = schema.getProp("logicalType");
+        if ("DECIMAL".equalsIgnoreCase(logicalType)) {
+            return type == Type.STRING ? "0" : 0;
+        }
+        if ("SMALLINT".equalsIgnoreCase(logicalType)
+                || "INTEGER".equalsIgnoreCase(logicalType)) {
+            return 0;
+        }
         switch (type) {
             case INT:
             case LONG: return 0;
@@ -48,26 +55,16 @@ public class SchemaTypeConverter {
 
                 ColumnMetaData col = findColumnByName(tmd, f.name());
 
-                int byteLen = 255;
-                int charLen = 255;
-                if (col != null) {
-                    try {
-                        Method m = col.getClass().getMethod("getColumnLength");
-                        Object v = m.invoke(col);
-                        if (v instanceof Number && ((Number) v).intValue() > 0) {
-                            byteLen = ((Number) v).intValue();
-
-                            // UTF-8 heuristic: 3 bytes per char
-                            if (byteLen % 3 == 0) {
-                                charLen = byteLen / 3;
-                            } else {
-                                charLen = byteLen;
-                            }
-                        }
-                    } catch (Exception ignore) {
-                    }
+                int charLen = existingLength(effective);
+                if (col != null && col.getColumnDataType() != null
+                        && col.getColumnDataType().getColumnLength() > 0) {
+                    charLen = Math.toIntExact(col.getColumnDataType().getColumnLength());
+                } else if (col != null && col.getColumnLength() > 0) {
+                    charLen = Math.toIntExact(col.getColumnLength());
                 }
-                System.out.println(">>> [ValueSchema] UTF-8 length fix: column=" + f.name() + " byteLen=" + byteLen + " charLen(byteLen/3)=" + charLen);
+                if (charLen <= 0) {
+                    throw new IllegalArgumentException("Missing character length for column " + f.name());
+                }
 
                 Schema s2 = Schema.create(Schema.Type.STRING);
 
@@ -92,6 +89,11 @@ public class SchemaTypeConverter {
         copyRecordProps(record, out);
         copySchemaAliases(record, out);
         return out;
+    }
+
+    private int existingLength(Schema schema) {
+        Object length = schema.getObjectProp("length");
+        return length instanceof Number ? ((Number) length).intValue() : -1;
     }
 
     public void copySchemaPropsExcept(Schema from, Schema to, String... excluded) {

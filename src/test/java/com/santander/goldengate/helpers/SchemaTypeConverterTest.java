@@ -23,7 +23,7 @@ import oracle.goldengate.datasource.meta.TableName;
 class SchemaTypeConverterTest {
 
     @Test
-    void cloneRecordWithCharLengthsPreservesNumericLengthAndNoDefault() {
+    void cloneRecordWithCharLengthsUsesDeclaredLogicalLengthWithoutUtf8Heuristic() {
         SchemaTypeConverter converter = new SchemaTypeConverter();
         TableMetaData tableMetaData = tableMetaData(column("CD_BANC", 0, 12L));
 
@@ -35,11 +35,11 @@ class SchemaTypeConverterTest {
         String clonedJson = cloned.toString(true);
 
         assertInstanceOf(Number.class, length);
-        assertEquals(4, ((Number) length).intValue());
+        assertEquals(12, ((Number) length).intValue());
         assertEquals("", clonedField.doc());
         assertFalse(clonedField.hasDefaultValue());
-        assertTrue(clonedJson.contains("\"length\" : 4"));
-        assertFalse(clonedJson.contains("\"length\" : \"4\""));
+        assertTrue(clonedJson.contains("\"length\" : 12"));
+        assertFalse(clonedJson.contains("\"length\" : \"12\""));
     }
 
     @Test

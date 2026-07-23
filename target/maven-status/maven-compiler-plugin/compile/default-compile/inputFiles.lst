@@ -1,10 +1,13 @@
+/Users/bdsousa/Documents/code/santander/OggJavaHandler/src/main/java/com/santander/goldengate/handler/kafka/KafkaPublisher.java
+/Users/bdsousa/Documents/code/santander/OggJavaHandler/src/main/java/com/santander/goldengate/handler/Db2SchemaContractCatalog.java
+/Users/bdsousa/Documents/code/santander/OggJavaHandler/src/main/java/com/santander/goldengate/helpers/CharFormatHandler.java
+/Users/bdsousa/Documents/code/santander/OggJavaHandler/src/main/java/com/santander/goldengate/helpers/ColumnSchemaMapper.java
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/main/java/com/santander/goldengate/helpers/DateFormatHandler.java
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/main/java/com/santander/goldengate/helpers/SchemaTypeConverter.java
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/main/java/com/santander/goldengate/handler/AvroSchemaManager.java
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/main/java/com/santander/goldengate/helpers/EntityTypeFormatHandler.java
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/main/java/com/santander/goldengate/handler/KcopHandler.java
-/Users/bdsousa/Documents/code/santander/OggJavaHandler/src/main/java/com/santander/goldengate/handler/kafka/KafkaPublisher.java
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/main/java/com/santander/goldengate/handler/KeyFieldOrderResolver.java
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/main/java/com/santander/goldengate/handler/SchemaRegistryClient.java
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/main/java/com/santander/goldengate/handler/kafka/KafkaPublisherImpl.java
-/Users/bdsousa/Documents/code/santander/OggJavaHandler/src/main/java/com/santander/goldengate/helpers/CharFormatHandler.java
+/Users/bdsousa/Documents/code/santander/OggJavaHandler/src/main/java/com/santander/goldengate/helpers/DecimalValueConverter.java

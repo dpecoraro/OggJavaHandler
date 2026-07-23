@@ -8,8 +8,12 @@ import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import org.apache.avro.Schema;
 
@@ -18,13 +22,17 @@ import org.apache.avro.Schema;
  */
 public class SchemaRegistryClient {
 
+    private static final Logger LOGGER = Logger.getLogger(SchemaRegistryClient.class.getName());
     private final Set<String> registryUrls = new LinkedHashSet<>();
-    private final Set<String> registeredSubjects = new LinkedHashSet<>();
+    private final Map<String, String> registeredSchemas = new LinkedHashMap<>();
 
     public void init(Properties props) {
         String valueUrls = props.getProperty("value.converter.schema.registry.url");
         String keyUrls = props.getProperty("key.converter.schema.registry.url");
-        String raw = (valueUrls != null && !valueUrls.isEmpty()) ? valueUrls : keyUrls;
+        String directUrls = props.getProperty("schema.registry.url");
+        String raw = directUrls != null && !directUrls.isEmpty()
+                ? directUrls
+                : (valueUrls != null && !valueUrls.isEmpty()) ? valueUrls : keyUrls;
         if (raw != null && !raw.isEmpty()) {
             for (String u : raw.split(",")) {
                 String t = u.trim();
@@ -36,17 +44,17 @@ public class SchemaRegistryClient {
 
     public void registerIfNeeded(String subject, Schema schema) {
         if (schema == null || subject == null || subject.isEmpty() || registryUrls.isEmpty()) return;
-        if (registeredSubjects.contains(subject)) return;
+        String fingerprint = schema.toString();
+        if (fingerprint.equals(registeredSchemas.get(subject))) return;
         try {
             int id = register(subject, schema);
             if (id > 0) {
-                registeredSubjects.add(subject);
-                //System.out.println(">>> [SchemaRegistryClient] Registered subject=" + subject + " id=" + id);
+                registeredSchemas.put(subject, fingerprint);
             } else {
-                //System.out.println(">>> [SchemaRegistryClient] No id returned subject=" + subject);
+                LOGGER.warning("Schema Registry did not return an id for " + subject);
             }
         } catch (Exception e) {
-            System.err.println("[SchemaRegistryClient] Failed subject=" + subject + " msg=" + e.getMessage());
+            LOGGER.log(Level.WARNING, "Failed to register Schema Registry subject " + subject, e);
         }
     }
 
@@ -58,7 +66,7 @@ public class SchemaRegistryClient {
                 if (id > 0) return id;
             } catch (Exception e) {
                 last = e;
-                System.err.println("[SchemaRegistryClient] POST failed url=" + base + " msg=" + e.getMessage());
+                LOGGER.log(Level.FINE, "Schema Registry endpoint failed: " + base, e);
             }
         }
         if (last != null) throw last;

@@ -31,6 +31,9 @@ public class KcopHandlerTest {
             Field f = KcopHandler.class.getDeclaredField("schemaManager");
             f.setAccessible(true);
             f.set(handler, schemaManager);
+            Field converterField = KcopHandler.class.getDeclaredField("schemaTypeConverter");
+            converterField.setAccessible(true);
+            converterField.set(handler, converter);
         } catch (Exception e) {
             fail("Failed to inject schemaManager: " + e.getMessage());
         }
@@ -100,6 +103,21 @@ public class KcopHandlerTest {
         Schema str = Schema.create(Type.STRING);
         assertEquals("xpto", handler.convertValueToSchemaType("xpto", str));
         assertEquals("10", handler.convertValueToSchemaType(10, str));
+    }
+
+    @Test
+    void testConvertDecimalUsingDeclaredTypeAndScale() {
+        Schema decimalInt = Schema.create(Type.INT);
+        decimalInt.addProp("logicalType", "DECIMAL");
+        decimalInt.addProp("precision", 9);
+        decimalInt.addProp("scale", 0);
+        assertEquals(1, handler.convertValueToSchemaType("1.00", decimalInt, "VL_INT"));
+
+        Schema decimalString = Schema.create(Type.STRING);
+        decimalString.addProp("logicalType", "DECIMAL");
+        decimalString.addProp("precision", 19);
+        decimalString.addProp("scale", 2);
+        assertEquals("1.20", handler.convertValueToSchemaType("1.2", decimalString, "VL_STRING"));
     }
 
     @Test

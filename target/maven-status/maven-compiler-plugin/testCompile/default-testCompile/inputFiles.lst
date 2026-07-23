@@ -4,3 +4,6 @@
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/test/java/oracle/goldengate/util/ConfigException.java
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/test/java/com/santander/goldengate/handler/KeyFieldOrderResolverTest.java
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/test/java/com/santander/goldengate/handler/KcopHandlerTest.java
+/Users/bdsousa/Documents/code/santander/OggJavaHandler/src/test/java/com/santander/goldengate/handler/Db2SchemaContractCatalogTest.java
+/Users/bdsousa/Documents/code/santander/OggJavaHandler/src/test/java/com/santander/goldengate/helpers/DecimalValueConverterTest.java
+/Users/bdsousa/Documents/code/santander/OggJavaHandler/src/test/java/com/santander/goldengate/helpers/ColumnSchemaMapperTest.java

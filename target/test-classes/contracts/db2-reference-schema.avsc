@@ -1,0 +1,36 @@
+{
+  "type": "record",
+  "name": "AuditRecord",
+  "namespace": "value.DB",
+  "doc": "",
+  "fields": [
+    {
+      "name": "beforeImage",
+      "type": [
+        "null",
+        {
+          "type": "record",
+          "name": "T1",
+          "doc": "",
+          "fields": [
+            {"name": "VL_INT", "type": {"type": "int", "logicalType": "DECIMAL", "dbColumnName": "VL_INT", "precision": 9, "scale": 0}, "doc": "", "default": 0},
+            {"name": "VL_LONG", "type": {"type": "long", "logicalType": "DECIMAL", "dbColumnName": "VL_LONG", "precision": 18, "scale": 0}, "doc": "", "default": 0},
+            {"name": "VL_STRING", "type": {"type": "string", "logicalType": "DECIMAL", "dbColumnName": "VL_STRING", "precision": 19, "scale": 0}, "doc": "", "default": "0"},
+            {"name": "VL_SCALE", "type": {"type": "string", "logicalType": "DECIMAL", "dbColumnName": "VL_SCALE", "precision": 8, "scale": 2}, "doc": "", "default": "0"},
+            {"name": "QT_SMALL", "type": {"type": "int", "logicalType": "SMALLINT", "dbColumnName": "QT_SMALL"}, "doc": "", "default": 0},
+            {"name": "DT_EVENTO", "type": {"type": "string", "logicalType": "DATE", "dbColumnName": "DT_EVENTO", "length": 10}, "doc": "", "default": ""},
+            {"name": "DH_EVENTO", "type": {"type": "string", "logicalType": "TIMESTAMP", "dbColumnName": "DH_EVENTO", "length": 32}, "doc": "", "default": ""},
+            {"name": "CD_FLAG", "type": {"type": "string", "logicalType": "CHARACTER", "dbColumnName": "CD_FLAG", "length": 1}, "doc": "", "default": ""}
+          ]
+        }
+      ],
+      "doc": ""
+    },
+    {"name": "afterImage", "type": ["null", "value.DB.T1"], "doc": ""},
+    {"name": "A_ENTTYP", "type": ["null", "string"], "doc": ""},
+    {"name": "A_CCID", "type": ["null", "string"], "doc": ""},
+    {"name": "A_TIMSTAMP", "type": ["null", "string"], "doc": ""},
+    {"name": "A_JOBUSER", "type": ["null", "string"], "doc": ""},
+    {"name": "A_USER", "type": ["null", "string"], "doc": ""}
+  ]
+}
