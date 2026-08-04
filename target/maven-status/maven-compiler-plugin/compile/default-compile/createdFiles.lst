@@ -6,6 +6,7 @@ com/santander/goldengate/handler/KcopHandler.class
 com/santander/goldengate/handler/KcopHandler$KeyFieldSpec.class
 com/santander/goldengate/helpers/ColumnSchemaMapper.class
 com/santander/goldengate/handler/SchemaRegistryClient.class
+com/santander/goldengate/handler/OperationDeliverySupport.class
 com/santander/goldengate/helpers/EntityTypeFormatHandler.class
 com/santander/goldengate/handler/Db2SchemaContractCatalog.class
 com/santander/goldengate/helpers/SchemaTypeConverter$1.class

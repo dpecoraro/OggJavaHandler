@@ -4,6 +4,16 @@ Handler Java para o **Oracle GoldenGate (Java Adapter / javawriter)** que transf
 
 > Repositório: `golden-gate-kcop-handler` (Java 11 / Maven)
 
+## Documentação de handover
+
+Para assumir, manter ou operar o projeto, comece por estes materiais:
+
+- [Handover técnico](docs/HANDOVER.md): arquitetura, componentes, ciclo de vida, schemas, chave, tópicos, configuração e manutenção, com diagramas.
+- [Runbook operacional](docs/RUNBOOK.md): build, validação, diagnóstico de falhas, recuperação e evidências para escalonamento.
+- [Apresentação de handover](GoldenGate-KCOP-Handler-Apresentacao.pptx): roteiro visual para uma sessão de transferência de conhecimento.
+
+Os guias usam exclusivamente fatos comprovados pelo repositório. Configuração, segurança, topologia e procedimentos reais de produção devem ser fornecidos pelos responsáveis do ambiente.
+
 ## Visão geral do fluxo
 
 1. O **Replicat** do GoldenGate executa o **Java Adapter** (`libggjava.so` + `ggjava.jar`).
@@ -13,7 +23,12 @@ Handler Java para o **Oracle GoldenGate (Java Adapter / javawriter)** que transf
    - cria (ou reutiliza) um **Schema Avro** compatível
    - monta um **envelope** com `beforeImage` / `afterImage` + campos de auditoria
    - calcula uma **chave** (`String`) a partir das colunas-chave
-   - publica em um **tópico Kafka** usando `KafkaProducer` + `KafkaAvroSerializer`.
+   - publica em um **tópico Kafka** usando `KafkaProducer` + `KafkaAvroSerializer`
+   - aguarda a confirmação do producer antes de retornar sucesso ao GoldenGate.
+
+Se a transformação, serialização ou entrega ao Kafka falhar, `operationAdded()`
+registra o erro e retorna `Status.ABEND`, solicitando a parada do Replicat para
+evitar que o fluxo avance silenciosamente sem o evento.
 
 ## Principais bibliotecas (com foco no GoldenGate)
 
@@ -60,7 +75,8 @@ Arquivo: [src/main/java/com/santander/goldengate/handler/KcopHandler.java](src/m
 
 Responsabilidades principais:
 - **Integração GoldenGate:** herda `AbstractHandler` e implementa `init(...)` e `operationAdded(...)`.
-- **Leitura de dados CDC:** percorre `DsRecord`/`DsColumn` e monta mapas `beforeImage` e `afterImage`.
+- **Leitura de dados CDC:** percorre `DsRecord`/`DsColumn`, preserva SQL `NULL`
+  como `null` Java e monta mapas `beforeImage` e `afterImage`.
 - **Schema Avro:** pede ao `AvroSchemaManager` um schema por tabela e usa `SchemaTypeConverter` para ajustes.
 - **Envelope CDC:** cria `GenericRecord` com:
   - `beforeImage` (record ou `null`)
@@ -74,7 +90,11 @@ Responsabilidades principais:
     2) default interno (`defaultKeyColumnSpecs`)
     3) fallback para metadado GG (`ColumnMetaData.isKeyCol()`)
   - monta a string da chave concatenando campos com padding quando há `length`.
-- **Publicação Kafka:** envia `ProducerRecord<String, GenericRecord>`.
+- **Publicação Kafka:** envia `ProducerRecord<String, GenericRecord>` e aguarda
+  o `Future` retornado pelo producer. Falhas síncronas ou assíncronas são
+  propagadas até `operationAdded()`.
+- **Política de falha:** qualquer exceção no processamento da operação resulta
+  em `Status.ABEND` para interromper o Replicat.
 
 ### `AvroSchemaManager`
 Arquivo: [src/main/java/com/santander/goldengate/handler/AvroSchemaManager.java](src/main/java/com/santander/goldengate/handler/AvroSchemaManager.java)
@@ -98,14 +118,16 @@ Arquivo: [src/main/java/com/santander/goldengate/handler/SchemaRegistryClient.ja
 Cliente simples para registrar schemas no Schema Registry via REST.
 
 No `KcopHandler`, a inicialização ocorre via `schemaRegistryClient.init(kafkaProps)`.
-O handler registra cada versão distinta de schema por subject e propaga falhas de
-registro; o `KafkaAvroSerializer` também utiliza `schema.registry.url`.
+O handler tenta registrar cada versão distinta de schema por subject. O cliente
+explícito registra falhas como `WARNING` sem propagá-las; o
+`KafkaAvroSerializer` também utiliza `schema.registry.url` e pode falhar durante
+a serialização/publicação.
 
 ### Helpers (`helpers/*`)
 Pasta: [src/main/java/com/santander/goldengate/helpers/](src/main/java/com/santander/goldengate/helpers/)
 
 Utilitários para:
-- conversão de tipos e defaults Avro (`SchemaTypeConverter`)
+- conversão de tipos, defaults e unions anuláveis Avro (`SchemaTypeConverter`)
 - formatação de datas (`DateFormatHandler`)
 - pad/length e tratamento de char (`CharFormatHandler`)
 - mapear tipo de operação GG (`EntityTypeFormatHandler`)
@@ -113,13 +135,11 @@ Utilitários para:
 ## Configuração (GoldenGate)
 
 ### Replicat (`replicat.prm`)
-Exemplo no arquivo [replicat.prm](replicat.prm):
-- carrega o Java Adapter:
-  - `TARGETDB LIBFILE libggjava.so SET property=.../custom.properties`
-- define `javawriter.bootoptions` com classpath incluindo:
-  - `ggjava.jar`
-  - o JAR gerado por este projeto (`KcopHandler01.jar` ou `...-jar-with-dependencies.jar`)
-  - dependências do Kafka (no exemplo, via pasta `.../dependencies/kafka_3.7.2/*`)
+
+Não há um `replicat.prm` versionado neste repositório. A configuração externa
+do Replicat precisa carregar o Java Adapter, incluir `ggjava.jar` e o JAR do
+handler no classpath e apontar para as propriedades do handler. Os nomes,
+caminhos e comandos reais do ambiente devem ser confirmados com Operações.
 
 ### custom.properties
 Template atual em [src/main/resources/custom.properties.template](src/main/resources/custom.properties.template).
@@ -151,9 +171,10 @@ O build gera um JAR “fat” (com dependências) via `maven-assembly-plugin`.
 mvn -q test
 ```
 
-Testes existentes:
-- [src/test/java/com/santander/goldengate/handler/AvroSchemaManagerTest.java](src/test/java/com/santander/goldengate/handler/AvroSchemaManagerTest.java)
-- [src/test/java/com/santander/goldengate/handler/KcopHandlerTest.java](src/test/java/com/santander/goldengate/handler/KcopHandlerTest.java)
+Na linha de base registrada no [handover](docs/HANDOVER.md#12-testes-e-confiança-atual),
+26 testes foram executados com sucesso e 13 testes de `KcopHandlerTest` foram
+ignorados. A suíte não substitui um teste integrado com GoldenGate, Schema
+Registry e Kafka.
 
 ## Observações operacionais
 
@@ -182,6 +203,16 @@ não incluem payload, chave ou detalhes por coluna.
 - `DATE`: `STRING` com logical type `DATE` e length 10.
 - `TIMESTAMP`: `STRING` com logical type `TIMESTAMP` e length 32.
 - `CHAR/CHARACTER`: usa o comprimento lógico declarado, sem divisão heurística por três.
+
+### Campos anuláveis
+
+- O indicador `DsColumn.isValueNull()` do GoldenGate é usado para distinguir
+  SQL `NULL` da string de negócio literal `"NULL"`.
+- SQL `NULL` é gravado como `null` quando o campo Avro contém um ramo `null`.
+- Para unions como `[int, null]` ou `[string, null]`, valores não nulos são
+  convertidos conforme o ramo não nulo, incluindo logical types `DECIMAL`.
+- Se um SQL `NULL` chegar para um campo Avro não anulável, a operação falha e o
+  Replicat recebe `Status.ABEND`; o handler não substitui esse valor por default.
 
 Precisão decimal e comprimento de texto ausentes interrompem a criação do schema,
 evitando publicar contratos aproximados. O contrato completo usado nos testes está

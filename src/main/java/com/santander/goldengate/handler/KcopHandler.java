@@ -39,6 +39,7 @@ import com.santander.goldengate.helpers.SchemaTypeConverter;
 
 import oracle.goldengate.datasource.AbstractHandler;
 import oracle.goldengate.datasource.DsColumn;
+import oracle.goldengate.datasource.DsColumn.BeforeAfter;
 import oracle.goldengate.datasource.DsConfiguration;
 import oracle.goldengate.datasource.DsEvent;
 import oracle.goldengate.datasource.DsOperation;
@@ -69,7 +70,7 @@ public class KcopHandler extends AbstractHandler {
     private String kafkaProducerConfigFile;
     private DsMetaData metaData;
     private AvroSchemaManager schemaManager;
-    private SchemaTypeConverter schemaTypeConverter;
+    private SchemaTypeConverter schemaTypeConverter = new SchemaTypeConverter();
     private KafkaProducer<String, GenericRecord> kafkaProducer; 
     private String topicMappingTemplate;
     private String kafkaBootstrapServers;
@@ -212,7 +213,7 @@ public class KcopHandler extends AbstractHandler {
 
         } catch (Exception ex) {
             LOGGER.log(Level.SEVERE, "Operation could not be queued for Kafka", ex);
-            return Status.CHKPT;
+            return OperationDeliverySupport.failureStatus();
         }
     }
 
@@ -240,13 +241,11 @@ public class KcopHandler extends AbstractHandler {
             int idx = 0;
             for (DsColumn c : record.getColumns()) {
                 String columnName = getColumnNameByIndex(idx, tableMetaData);
-                Object afterVal = c.hasAfterValue() ? c.getAfterValue() : null;
-                if (afterVal != null) {
-                    afterImage.put(columnName, extractValue(afterVal));
+                if (c.hasAfterValue()) {
+                    afterImage.put(columnName, extractColumnValue(c, BeforeAfter.AFTER));
                 }
-                Object beforeVal = c.hasBeforeValue() ? c.getBeforeValue() : null;
-                if (beforeVal != null) {
-                    beforeImage.put(columnName, extractValue(beforeVal));
+                if (c.hasBeforeValue()) {
+                    beforeImage.put(columnName, extractColumnValue(c, BeforeAfter.BEFORE));
                 }
                 idx++;
             }
@@ -348,7 +347,7 @@ public class KcopHandler extends AbstractHandler {
                     + " topic=" + topic
                     + " key.schema=" + keySchema.getFullName());*/
 
-            kafkaProducer.send(producerRecord);
+            sendAndAwait(producerRecord);
 
             //System.out.println(">>> SCHEMA: " + avroSchemaFixed.toString(true));
             //System.out.println(">>> CDC Record: " + cdcRecord);
@@ -386,9 +385,16 @@ public class KcopHandler extends AbstractHandler {
         GenericRecord rec = new GenericData.Record(recordSchema);
         for (Schema.Field colField : recordSchema.getFields()) {
             String colName = colField.name();
-            Object raw = image != null ? image.get(colName) : null;
+            boolean valuePresent = image != null && image.containsKey(colName);
+            Object raw = valuePresent ? image.get(colName) : null;
             Object converted;
-            if (raw == null && colField.hasDefaultValue()) {
+            if (valuePresent && raw == null) {
+                if (!allowsNull(colField.schema())) {
+                    throw new IllegalArgumentException(
+                            "SQL NULL received for non-nullable field " + colName);
+                }
+                converted = null;
+            } else if (!valuePresent && colField.hasDefaultValue()) {
                 converted = GenericData.get().getDefaultValue(colField);
             } else {
                 converted = convertValueToSchemaType(raw, colField.schema(), colName);
@@ -407,19 +413,20 @@ public class KcopHandler extends AbstractHandler {
     // Value conversion with logical types support (DATE/TIMESTAMP/DECIMAL)
     protected Object convertValueToSchemaType(Object value, Schema schema, String fieldName) {
         if (value == null) {
-            return schemaTypeConverter.getDefaultValue(schema);
+            return allowsNull(schema) ? null : schemaTypeConverter.getDefaultValue(schema);
         }
-        String logical = schema.getProp("logicalType");
+        Schema effectiveSchema = schemaTypeConverter.nonNullSchema(schema);
+        String logical = effectiveSchema.getProp("logicalType");
         Object out;
 
         try {
             // DECIMAL
             boolean isDecimalLogical = logical != null && "DECIMAL".equalsIgnoreCase(logical);
             if (isDecimalLogical) {
-                return decimalValueConverter.convert(value, schema, fieldName);
+                return decimalValueConverter.convert(value, effectiveSchema, fieldName);
             }
 
-            out = convertValueToSchemaType(value, schema);
+            out = convertValueToSchemaType(value, effectiveSchema);
 
             // DATE -> yyyy-MM-dd
             boolean isDateLogical = logical != null && "DATE".equalsIgnoreCase(logical);
@@ -466,7 +473,7 @@ public class KcopHandler extends AbstractHandler {
             }
         } catch (Exception ex) {
             throw new IllegalArgumentException("Cannot convert field " + fieldName
-                    + " to schema " + schema.getType(), ex);
+                    + " to schema " + effectiveSchema.getType(), ex);
         }
 
         return out;
@@ -475,9 +482,10 @@ public class KcopHandler extends AbstractHandler {
     // Base conversion by Avro primitive type
     protected Object convertValueToSchemaType(Object value, Schema schema) {
         if (value == null) {
-            return schemaTypeConverter.getDefaultValue(schema);
+            return allowsNull(schema) ? null : schemaTypeConverter.getDefaultValue(schema);
         }
-        Type type = schema.getType();
+        Schema effectiveSchema = schemaTypeConverter.nonNullSchema(schema);
+        Type type = effectiveSchema.getType();
         try {
             switch (type) {
                 case INT:
@@ -534,6 +542,18 @@ public class KcopHandler extends AbstractHandler {
         } catch (Exception ignore) {
             return null;
         }
+    }
+
+    Object extractColumnValue(DsColumn column, BeforeAfter image) {
+        return OperationDeliverySupport.extractColumnValue(column, image);
+    }
+
+    void sendAndAwait(ProducerRecord<String, GenericRecord> producerRecord) throws Exception {
+        OperationDeliverySupport.await(kafkaProducer.send(producerRecord));
+    }
+
+    private boolean allowsNull(Schema schema) {
+        return schemaTypeConverter.allowsNull(schema);
     }
 
     // Build RECORD key schema based on PK columns (or overrides or defaults)

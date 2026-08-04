@@ -32,6 +32,27 @@ public class SchemaTypeConverter {
         }
     }
 
+    public Schema nonNullSchema(Schema schema) {
+        if (schema != null && schema.getType() == Type.UNION) {
+            return schema.getTypes().stream()
+                    .filter(candidate -> candidate.getType() != Type.NULL)
+                    .findFirst()
+                    .orElse(schema);
+        }
+        return schema;
+    }
+
+    public boolean allowsNull(Schema schema) {
+        if (schema == null) {
+            return false;
+        }
+        if (schema.getType() == Type.NULL) {
+            return true;
+        }
+        return schema.getType() == Type.UNION
+                && schema.getTypes().stream().anyMatch(candidate -> candidate.getType() == Type.NULL);
+    }
+
     public Schema cloneRecordWithCharLengths(Schema record, TableMetaData tmd) {
         java.util.List<Schema.Field> clonedFields = new java.util.ArrayList<>();
 
