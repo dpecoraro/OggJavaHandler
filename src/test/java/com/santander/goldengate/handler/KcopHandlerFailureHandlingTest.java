@@ -47,6 +47,41 @@ class KcopHandlerFailureHandlingTest {
     }
 
     @Test
+    void keepsSqlNullForNullableFieldEvenWhenFieldHasNonNullDefault() {
+        Schema nullable = Schema.createUnion(
+                Arrays.asList(Schema.create(Type.STRING), Schema.create(Type.NULL)));
+        Schema.Field field = new Schema.Field("OPTIONAL_TEXT", nullable, "", "");
+
+        assertNull(OperationDeliverySupport.resolveSqlNull(field));
+    }
+
+    @Test
+    void usesDeclaredDefaultWhenSourceIsNullButContractIsNonNullable() {
+        Schema envelope = Db2SchemaContractCatalog.loadBundled().valueSchema("HQDT088");
+        Schema table = envelope.getField("beforeImage").schema().getTypes().stream()
+                .filter(candidate -> candidate.getType() == Type.RECORD)
+                .findFirst()
+                .orElseThrow();
+        Schema.Field field = table.getField("TX_OUTR_ESFC_CAMB");
+
+        assertEquals("", OperationDeliverySupport.resolveSqlNull(field).toString());
+    }
+
+    @Test
+    void rejectsSqlNullWhenNonNullableFieldHasNoDefault() {
+        Schema.Field field = new Schema.Field(
+                "REQUIRED_WITHOUT_DEFAULT", Schema.create(Type.STRING), "", null);
+
+        IllegalArgumentException thrown = assertThrows(
+                IllegalArgumentException.class,
+                () -> OperationDeliverySupport.resolveSqlNull(field));
+
+        assertEquals(
+                "SQL NULL received for non-nullable field without default REQUIRED_WITHOUT_DEFAULT",
+                thrown.getMessage());
+    }
+
+    @Test
     void waitsForKafkaAcknowledgementAndPropagatesAsynchronousFailure() throws Exception {
         CompletableFuture<org.apache.kafka.clients.producer.RecordMetadata> failed = new CompletableFuture<>();
         SerializationException failure = new SerializationException("serialization failed");

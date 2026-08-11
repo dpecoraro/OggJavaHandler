@@ -4,6 +4,9 @@ import java.util.Base64;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
+import org.apache.avro.Schema;
+import org.apache.avro.generic.GenericData;
+
 import oracle.goldengate.datasource.DsColumn;
 import oracle.goldengate.datasource.DsColumn.BeforeAfter;
 import oracle.goldengate.datasource.GGDataSource.Status;
@@ -43,6 +46,26 @@ final class OperationDeliverySupport {
             }
             throw ex;
         }
+    }
+
+    static Object resolveSqlNull(Schema.Field field) {
+        if (allowsNull(field.schema())) {
+            return null;
+        }
+        if (field.hasDefaultValue()) {
+            return GenericData.get().getDefaultValue(field);
+        }
+        throw new IllegalArgumentException(
+                "SQL NULL received for non-nullable field without default " + field.name());
+    }
+
+    private static boolean allowsNull(Schema schema) {
+        if (schema.getType() == Schema.Type.NULL) {
+            return true;
+        }
+        return schema.getType() == Schema.Type.UNION
+                && schema.getTypes().stream()
+                        .anyMatch(candidate -> candidate.getType() == Schema.Type.NULL);
     }
 
     static Status failureStatus() {

@@ -389,11 +389,7 @@ public class KcopHandler extends AbstractHandler {
             Object raw = valuePresent ? image.get(colName) : null;
             Object converted;
             if (valuePresent && raw == null) {
-                if (!allowsNull(colField.schema())) {
-                    throw new IllegalArgumentException(
-                            "SQL NULL received for non-nullable field " + colName);
-                }
-                converted = null;
+                converted = OperationDeliverySupport.resolveSqlNull(colField);
             } else if (!valuePresent && colField.hasDefaultValue()) {
                 converted = GenericData.get().getDefaultValue(colField);
             } else {
