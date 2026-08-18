@@ -7,5 +7,6 @@
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/test/java/com/santander/goldengate/handler/Db2SchemaContractCatalogTest.java
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/test/java/com/santander/goldengate/handler/KcopHandlerFailureHandlingTest.java
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/test/java/oracle/goldengate/util/DateString.java
+/Users/bdsousa/Documents/code/santander/OggJavaHandler/src/test/java/com/santander/goldengate/handler/AvroProducerConfigurationTest.java
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/test/java/com/santander/goldengate/helpers/DecimalValueConverterTest.java
 /Users/bdsousa/Documents/code/santander/OggJavaHandler/src/test/java/com/santander/goldengate/helpers/ColumnSchemaMapperTest.java

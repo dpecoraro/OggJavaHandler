@@ -22,7 +22,7 @@ Os guias usam exclusivamente fatos comprovados pelo repositório. Configuração
    - lê metadados de tabela/colunas via API do GoldenGate
    - cria (ou reutiliza) um **Schema Avro** compatível
    - monta um **envelope** com `beforeImage` / `afterImage` + campos de auditoria
-   - calcula uma **chave** (`String`) a partir das colunas-chave
+   - monta uma **chave Avro** (`GenericRecord`) a partir das colunas-chave
    - publica em um **tópico Kafka** usando `KafkaProducer` + `KafkaAvroSerializer`
    - aguarda a confirmação do producer antes de retornar sucesso ao GoldenGate.
 
@@ -64,8 +64,8 @@ Usado para:
 - `org.apache.kafka:kafka-clients`
 - `io.confluent:kafka-avro-serializer`
 
-O handler cria um `KafkaProducer<String, GenericRecord>` e configura:
-- `key.serializer=org.apache.kafka.common.serialization.StringSerializer`
+O handler cria um `KafkaProducer<GenericRecord, GenericRecord>` e configura:
+- `key.serializer=io.confluent.kafka.serializers.KafkaAvroSerializer`
 - `value.serializer=io.confluent.kafka.serializers.KafkaAvroSerializer`
 
 ## Estrutura do código (classes relevantes)
@@ -84,13 +84,13 @@ Responsabilidades principais:
   - `A_ENTTYP` (tipo de operação)
   - `A_CCID` (transaction id)
   - `A_TIMSTAMP` (timestamp formatado)
-- **Chave do Kafka (String):**
+- **Chave do Kafka (Avro `GenericRecord`):**
   - cria um **schema de chave** (record) baseado em:
     1) override via propriedades (`gg.handler.kafkahandler.keyColumns.<TABELA>`)
     2) default interno (`defaultKeyColumnSpecs`)
     3) fallback para metadado GG (`ColumnMetaData.isKeyCol()`)
-  - monta a string da chave concatenando campos com padding quando há `length`.
-- **Publicação Kafka:** envia `ProducerRecord<String, GenericRecord>` e aguarda
+  - preenche cada campo da chave conforme seu tipo no schema Avro.
+- **Publicação Kafka:** envia `ProducerRecord<GenericRecord, GenericRecord>` e aguarda
   o `Future` retornado pelo producer. Falhas síncronas ou assíncronas são
   propagadas até `operationAdded()`.
 - **Política de falha:** qualquer exceção no processamento da operação resulta
@@ -172,7 +172,7 @@ mvn -q test
 ```
 
 Na linha de base registrada no [handover](docs/HANDOVER.md#12-testes-e-confiança-atual),
-26 testes foram executados com sucesso e 13 testes de `KcopHandlerTest` foram
+31 testes foram executados com sucesso e 13 testes de `KcopHandlerTest` foram
 ignorados. A suíte não substitui um teste integrado com GoldenGate, Schema
 Registry e Kafka.
 
@@ -211,8 +211,10 @@ não incluem payload, chave ou detalhes por coluna.
 - SQL `NULL` é gravado como `null` quando o campo Avro contém um ramo `null`.
 - Para unions como `[int, null]` ou `[string, null]`, valores não nulos são
   convertidos conforme o ramo não nulo, incluindo logical types `DECIMAL`.
-- Se um SQL `NULL` chegar para um campo Avro não anulável, a operação falha e o
-  Replicat recebe `Status.ABEND`; o handler não substitui esse valor por default.
+- Se um SQL `NULL` chegar para um campo Avro não anulável que tenha default
+  declarado, o handler usa esse default para respeitar o contrato.
+- Se o campo não anulável não tiver default, a operação falha e o Replicat
+  recebe `Status.ABEND`.
 
 Precisão decimal e comprimento de texto ausentes interrompem a criação do schema,
 evitando publicar contratos aproximados. O contrato completo usado nos testes está

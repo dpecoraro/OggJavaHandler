@@ -1,3 +1,4 @@
+com/santander/goldengate/handler/AvroProducerConfiguration.class
 com/santander/goldengate/handler/kafka/KafkaPublisherImpl.class
 com/santander/goldengate/handler/AvroSchemaManager.class
 com/santander/goldengate/helpers/ColumnSchemaMapper$Mapping.class

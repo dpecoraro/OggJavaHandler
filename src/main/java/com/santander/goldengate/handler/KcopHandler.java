@@ -71,7 +71,7 @@ public class KcopHandler extends AbstractHandler {
     private DsMetaData metaData;
     private AvroSchemaManager schemaManager;
     private SchemaTypeConverter schemaTypeConverter = new SchemaTypeConverter();
-    private KafkaProducer<String, GenericRecord> kafkaProducer; 
+    private KafkaProducer<GenericRecord, GenericRecord> kafkaProducer;
     private String topicMappingTemplate;
     private String kafkaBootstrapServers;
     private String namespacePrefix;
@@ -162,9 +162,8 @@ public class KcopHandler extends AbstractHandler {
                 }
             }
 
-            // Use Avro serializers for both key and value
-            kafkaProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
-            kafkaProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "io.confluent.kafka.serializers.KafkaAvroSerializer");
+            // Key and value must both use the Schema Registry Avro wire format.
+            AvroProducerConfiguration.apply(kafkaProps);
             for (String propName : kafkaProps.stringPropertyNames()) {
                 if (propName.startsWith("gg.handler.kafkahandler.keyColumns")) {
                     String tableCode = propName.substring(propName.lastIndexOf('.') + 1).toUpperCase();
@@ -303,8 +302,8 @@ public class KcopHandler extends AbstractHandler {
                 keySchema = buildRecordKeySchema(table, tableMetaData);
                 keySchemaCache.put(table, keySchema);
             }
-            //System.out.println(">>> [KcopHandler] Building KeyString");
-            String keyRecord = buildKeyString(table, keySchema, cdcRecord);
+            //System.out.println(">>> [KcopHandler] Building Avro key record");
+            GenericRecord keyRecord = buildKeyRecord(keySchema, cdcRecord);
 
             /*System.out.println(">>> [KcopHandler] Prepared message:"
                     + " topic=" + topic
@@ -342,7 +341,8 @@ public class KcopHandler extends AbstractHandler {
             //System.out.println(">>> [KcopHandler] BeforeImage map: " + beforeImage);
             //System.out.println(">>> [KcopHandler] AfterImage map: " + afterImage);
 
-            ProducerRecord<String, GenericRecord> producerRecord = new ProducerRecord<>(topic, keyRecord, cdcRecord);
+            ProducerRecord<GenericRecord, GenericRecord> producerRecord =
+                    new ProducerRecord<>(topic, keyRecord, cdcRecord);
             /*System.out.println(">>> [KcopHandler] Sending to Kafka: bootstrap=" + kafkaBootstrapServers
                     + " topic=" + topic
                     + " key.schema=" + keySchema.getFullName());*/
@@ -544,7 +544,7 @@ public class KcopHandler extends AbstractHandler {
         return OperationDeliverySupport.extractColumnValue(column, image);
     }
 
-    void sendAndAwait(ProducerRecord<String, GenericRecord> producerRecord) throws Exception {
+    void sendAndAwait(ProducerRecord<GenericRecord, GenericRecord> producerRecord) throws Exception {
         OperationDeliverySupport.await(kafkaProducer.send(producerRecord));
     }
 
@@ -642,30 +642,16 @@ public class KcopHandler extends AbstractHandler {
         return fields.endRecord();
     }
 
-    // Build GenericRecord key from afterImage/beforeImage record inside the envelope
-    private String buildKeyString(String table, Schema keySchema, GenericRecord envelopeRecord) {
-        // Prefer afterImage; fallback to beforeImage
+    // Build the Avro key record from afterImage/beforeImage inside the envelope.
+    private GenericRecord buildKeyRecord(Schema keySchema, GenericRecord envelopeRecord) {
         GenericRecord image = getTableImageRecord(envelopeRecord);
-
-        StringBuilder sb = new StringBuilder();
+        Map<String, Object> keyValues = new LinkedHashMap<>();
         for (Schema.Field f : keySchema.getFields()) {
-            Object v = safeGetFromRecord(image, f.name());
-            String s = (v == null) ? "" : v.toString();
-
-            int len = 0;
-            try {
-                String l = f.schema().getProp("length");
-                if (l != null) {
-                    len = Integer.parseInt(l);
-                }
-            } catch (Exception ignore) {
+            if (image != null && image.getSchema().getField(f.name()) != null) {
+                keyValues.put(f.name(), safeGetFromRecord(image, f.name()));
             }
-            if (len > 0 && s.length() < len) {
-                sb.append("0".repeat(len - s.length()));
-            }
-            sb.append(s);
         }
-        return sb.toString();
+        return createRecord(keySchema, keyValues);
     }
 
     // Helper: select the inner table image record
