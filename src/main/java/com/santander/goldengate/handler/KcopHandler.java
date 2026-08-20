@@ -1,18 +1,15 @@
 package com.santander.goldengate.handler;
 
 import java.io.FileInputStream;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Base64;
-import java.util.Date;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -58,14 +55,20 @@ public class KcopHandler extends AbstractHandler {
     private static final Logger LOGGER = Logger.getLogger(KcopHandler.class.getName());
     private static final String LOG_LEVEL = "gg.handler.kcoph.logLevel";
     private static final String STATUS_LOG_INTERVAL = "gg.handler.kcoph.statusLogInterval";
+    private static final String MAX_PENDING_DELIVERIES =
+            "gg.handler.kcoph.maxPendingDeliveries";
     private static final long DEFAULT_STATUS_LOG_INTERVAL = 10_000L;
 
     private final AtomicLong operationCount = new AtomicLong();
     private final ColumnSchemaMapper columnSchemaMapper = new ColumnSchemaMapper();
     private final DecimalValueConverter decimalValueConverter = new DecimalValueConverter();
-    private final Map<String, Schema> finalSchemaCache = new HashMap<>();
-    private final Map<String, Schema> keySchemaCache = new HashMap<>();
-    private final Set<String> registeredTopics = new HashSet<>();
+    private final EntityTypeFormatHandler entityTypeFormatHandler = new EntityTypeFormatHandler();
+    private final Map<String, Schema> finalSchemaCache = new ConcurrentHashMap<>();
+    private final Map<String, Schema> keySchemaCache = new ConcurrentHashMap<>();
+    private final Map<String, String> topicCache = new ConcurrentHashMap<>();
+    private final Map<String, String[]> columnNamesCache = new ConcurrentHashMap<>();
+    private final Set<String> registeredTopics = ConcurrentHashMap.newKeySet();
+    private final long handlerStartedNanos = System.nanoTime();
     private long statusLogInterval = DEFAULT_STATUS_LOG_INTERVAL;
     private String kafkaProducerConfigFile;
     private DsMetaData metaData;
@@ -79,6 +82,9 @@ public class KcopHandler extends AbstractHandler {
     private SchemaRegistryClient schemaRegistryClient;
     private Db2SchemaContractCatalog schemaContractCatalog;
     private DateFormatHandler dateFormatHandler = new DateFormatHandler();
+    private TransactionDeliveryTracker deliveryTracker = new TransactionDeliveryTracker(
+            TransactionDeliveryTracker.DEFAULT_MAX_PENDING_DELIVERIES);
+    private boolean explicitSchemaRegistration;
 
     private Map<String, String[]> keyColumnsOverrides = new HashMap<>();
     private Map<String, LinkedHashMap<String, Integer>> defaultKeyColumnSpecs = new HashMap<>();
@@ -141,6 +147,11 @@ public class KcopHandler extends AbstractHandler {
                     kafkaProps.getProperty(STATUS_LOG_INTERVAL,
                             String.valueOf(DEFAULT_STATUS_LOG_INTERVAL)));
             kafkaProps.remove(STATUS_LOG_INTERVAL);
+            int maxPendingDeliveries = Integer.parseInt(kafkaProps.getProperty(
+                    MAX_PENDING_DELIVERIES,
+                    String.valueOf(TransactionDeliveryTracker.DEFAULT_MAX_PENDING_DELIVERIES)));
+            kafkaProps.remove(MAX_PENDING_DELIVERIES);
+            this.deliveryTracker = new TransactionDeliveryTracker(maxPendingDeliveries);
 
             // Namespace prefix and schema manager
             //String namespacePrefix = kafkaProps.getProperty("gg.handler.kcoph.namespacePrefix", "value.SOURCEDB.BALP");
@@ -151,6 +162,8 @@ public class KcopHandler extends AbstractHandler {
             // init registry client (optional, KafkaAvroSerializer will register automatically)
             schemaRegistryClient = new SchemaRegistryClient();
             schemaRegistryClient.init(kafkaProps);
+            this.explicitSchemaRegistration =
+                    AvroProducerConfiguration.requiresExplicitSchemaRegistration(kafkaProps);
 
             // Ensure schema.registry.url is set for KafkaAvroSerializer
             if (kafkaProps.getProperty("schema.registry.url") == null || kafkaProps.getProperty("schema.registry.url").isEmpty()) {
@@ -183,7 +196,9 @@ public class KcopHandler extends AbstractHandler {
             kafkaProducer = new KafkaProducer<>(kafkaProps);
             LOGGER.info(() -> "Kafka producer initialized: bootstrap=" + kafkaBootstrapServers
                     + ", db2ValueContracts=" + schemaContractCatalog.valueSchemaCount()
-                    + ", db2KeyContracts=" + schemaContractCatalog.keySchemaCount());
+                    + ", db2KeyContracts=" + schemaContractCatalog.keySchemaCount()
+                    + ", maxPendingDeliveries=" + maxPendingDeliveries
+                    + ", explicitSchemaRegistration=" + explicitSchemaRegistration);
             //System.out.println(">>> [KcopHandler] Kafka bootstrap.servers: " + kafkaBootstrapServers);
             //System.out.println(">>> [KcopHandler] Namespace prefix: " + namespacePrefix);
             if (topicMappingTemplate != null) {
@@ -191,6 +206,7 @@ public class KcopHandler extends AbstractHandler {
             }
         } catch (Exception ex) {
             LOGGER.log(Level.SEVERE, "Error initializing Kafka producer", ex);
+            throw new IllegalStateException("KcopHandler initialization failed", ex);
         }
     }
 
@@ -206,8 +222,7 @@ public class KcopHandler extends AbstractHandler {
                 LOGGER.info(this::reportStatus);
             }
 
-            // pass event to processOperation
-            processOperation(event, tx, operation);
+            processOperation(tx, operation);
             return Status.OK;
 
         } catch (Exception ex) {
@@ -216,8 +231,7 @@ public class KcopHandler extends AbstractHandler {
         }
     }
 
-    // include event to read operation timestamp
-    private void processOperation(DsEvent event, DsTransaction tx, DsOperation operation) throws Exception {
+    private void processOperation(DsTransaction tx, DsOperation operation) throws Exception {
         if (tx == null || operation == null) {
             //System.out.println(">>> [KcopHandler] Warning: tx/operation null");
             return;
@@ -225,8 +239,7 @@ public class KcopHandler extends AbstractHandler {
 
         String table = operation.getTableName() != null ? operation.getTableName().toString() : "UNKNOWN";
 
-        EntityTypeFormatHandler enttypHandler = new EntityTypeFormatHandler();
-        String opType = enttypHandler.mapEntTyp(operation);
+        String opType = entityTypeFormatHandler.mapEntTyp(operation);
 
         TableMetaData tableMetaData = (metaData != null && operation.getTableName() != null)
                 ? metaData.getTableMetaData(operation.getTableName())
@@ -237,9 +250,13 @@ public class KcopHandler extends AbstractHandler {
 
         DsRecord record = operation.getRecord();
         if (record != null && record.getColumns() != null) {
+            String[] columnNames = columnNamesCache.computeIfAbsent(
+                    table, ignored -> buildColumnNames(tableMetaData));
             int idx = 0;
             for (DsColumn c : record.getColumns()) {
-                String columnName = getColumnNameByIndex(idx, tableMetaData);
+                String columnName = idx < columnNames.length
+                        ? columnNames[idx]
+                        : "COL_" + idx;
                 if (c.hasAfterValue()) {
                     afterImage.put(columnName, extractColumnValue(c, BeforeAfter.AFTER));
                 }
@@ -285,15 +302,15 @@ public class KcopHandler extends AbstractHandler {
             putIfPresent(cdcRecord, "A_ENTTYP", opType);
             putIfPresent(cdcRecord, "A_CCID",
                     tx.getTranID() != null ? tx.getTranID().toString() : null);
-            putIfPresent(cdcRecord, "A_TIMSTAMP", dateFormatHandler.formatMillisSpace12(
-                    extractOperationTimestampMillis(event, tx, operation)));
+            putIfPresent(cdcRecord, "A_TIMSTAMP", extractOperationTimestamp(tx, operation));
 
             //String ggUser = extractUser(event, tx, operation);
             //cdcRecord.put("A_JOBUSER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser); // changed
             //cdcRecord.put("A_USER", ggUser != null && !ggUser.isEmpty() ? ggUser : sysUser);    // changed
             // Build topic
             //System.out.println(">>> [KcopHandler] Building topic");
-            String topic = resolveTopic(topicMappingTemplate, table);
+            String topic = topicCache.computeIfAbsent(
+                    table, ignored -> resolveTopic(topicMappingTemplate, table));
 
             // Build Avro key schema (RECORD) and key GenericRecord from PK columns
             //System.out.println(">>> [KcopHandler] Building KeySchema");
@@ -316,7 +333,7 @@ public class KcopHandler extends AbstractHandler {
                     + " A_USER=" + cdcRecord.get("A_USER")); */
 
             // Register schemas once per topic (value and key) — RECORD key
-            if (!registeredTopics.contains(topic)) {
+            if (explicitSchemaRegistration && registeredTopics.add(topic)) {
                 String valueSubject = topic + "-value";
                 String keySubject = topic + "-key";
 
@@ -330,7 +347,6 @@ public class KcopHandler extends AbstractHandler {
                         + " schema=" + keySchema.toString());*/
                 schemaRegistryClient.registerIfNeeded(keySubject, keySchema); 
 
-                registeredTopics.add(topic);
                 LOGGER.info(() -> "Schema Registry subjects registered: valueSubject="
                         + valueSubject + ", keySubject=" + keySubject);
             }
@@ -347,7 +363,7 @@ public class KcopHandler extends AbstractHandler {
                     + " topic=" + topic
                     + " key.schema=" + keySchema.getFullName());*/
 
-            sendAndAwait(producerRecord);
+            sendAsync(transactionKey(tx), producerRecord);
 
             //System.out.println(">>> SCHEMA: " + avroSchemaFixed.toString(true));
             //System.out.println(">>> CDC Record: " + cdcRecord);
@@ -431,7 +447,7 @@ public class KcopHandler extends AbstractHandler {
                 String s = out.toString().replace('/', '-');
                 int cutIdx = Math.max(s.indexOf(' '), s.indexOf('T'));
                 String dateOnly = cutIdx > 0 ? s.substring(0, cutIdx) : s;
-                if (dateOnly.matches("\\d{8}")) {
+                if (isEightDigitDate(dateOnly)) {
                     return dateOnly.substring(0, 4) + "-" + dateOnly.substring(4, 6) + "-" + dateOnly.substring(6, 8);
                 }
                 return dateOnly.length() >= 10 ? dateOnly.substring(0, 10) : dateOnly;
@@ -456,16 +472,16 @@ public class KcopHandler extends AbstractHandler {
                         break;
                     }
                 }
-                String frac = digits.toString();
-                if (frac.length() > 12) {
-                    frac = frac.substring(0, 12);
-                } else {
-                    while (frac.length() < 12) {
-                        frac += '0';
-                    }
+                int originalDigitCount = digits.length();
+                if (digits.length() > 12) {
+                    digits.setLength(12);
                 }
-                String remainder = iso.substring(dotIdx + 1 + digits.length(), endIdx);
-                return prefix + frac + remainder + (endIdx < iso.length() ? iso.substring(endIdx) : "");
+                while (digits.length() < 12) {
+                    digits.append('0');
+                }
+                String remainder = iso.substring(dotIdx + 1 + originalDigitCount, endIdx);
+                return prefix + digits + remainder
+                        + (endIdx < iso.length() ? iso.substring(endIdx) : "");
             }
         } catch (Exception ex) {
             throw new IllegalArgumentException("Cannot convert field " + fieldName
@@ -544,12 +560,32 @@ public class KcopHandler extends AbstractHandler {
         return OperationDeliverySupport.extractColumnValue(column, image);
     }
 
-    void sendAndAwait(ProducerRecord<GenericRecord, GenericRecord> producerRecord) throws Exception {
-        OperationDeliverySupport.await(kafkaProducer.send(producerRecord));
+    void sendAsync(String transactionKey,
+            ProducerRecord<GenericRecord, GenericRecord> producerRecord) throws Exception {
+        TransactionDeliveryTracker.Delivery delivery = deliveryTracker.begin(transactionKey);
+        try {
+            kafkaProducer.send(producerRecord,
+                    (metadata, failure) -> deliveryTracker.complete(delivery, failure));
+        } catch (Exception ex) {
+            deliveryTracker.complete(delivery, ex);
+            throw ex;
+        }
     }
 
     private boolean allowsNull(Schema schema) {
         return schemaTypeConverter.allowsNull(schema);
+    }
+
+    private boolean isEightDigitDate(String value) {
+        if (value == null || value.length() != 8) {
+            return false;
+        }
+        for (int index = 0; index < value.length(); index++) {
+            if (!Character.isDigit(value.charAt(index))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     // Build RECORD key schema based on PK columns (or overrides or defaults)
@@ -694,15 +730,36 @@ public class KcopHandler extends AbstractHandler {
 
     @Override
     public Status transactionCommit(DsEvent event, DsTransaction tx) {
-        return Status.OK;
+        try {
+            deliveryTracker.commit(transactionKey(tx));
+            return Status.OK;
+        } catch (Exception ex) {
+            LOGGER.log(Level.SEVERE, "Kafka delivery failed before transaction commit", ex);
+            return OperationDeliverySupport.failureStatus();
+        }
+    }
+
+    @Override
+    public Status transactionRollback(DsEvent event, DsTransaction tx) {
+        try {
+            deliveryTracker.rollback(transactionKey(tx));
+            return Status.OK;
+        } catch (Exception ex) {
+            LOGGER.log(Level.SEVERE, "Kafka delivery failed before transaction rollback", ex);
+            return OperationDeliverySupport.failureStatus();
+        }
     }
 
     @Override
     public Status metaDataChanged(DsEvent event, DsMetaData changedMetaData) {
         this.metaData = changedMetaData;
-        schemaManager.clearCache();
+        if (schemaManager != null) {
+            schemaManager.clearCache();
+        }
         finalSchemaCache.clear();
         keySchemaCache.clear();
+        topicCache.clear();
+        columnNamesCache.clear();
         registeredTopics.clear();
         LOGGER.info("GoldenGate metadata changed; schema caches were invalidated");
         return Status.OK;
@@ -710,9 +767,21 @@ public class KcopHandler extends AbstractHandler {
 
     @Override
     public void destroy() {
+        deliveryTracker.stopAccepting();
         if (kafkaProducer != null) {
             try {
                 kafkaProducer.flush();
+            } catch (Exception ex) {
+                LOGGER.log(Level.SEVERE, "Error flushing Kafka producer", ex);
+            }
+        }
+        try {
+            deliveryTracker.awaitAll();
+        } catch (Exception ex) {
+            LOGGER.log(Level.SEVERE, "Error draining pending Kafka deliveries", ex);
+        }
+        if (kafkaProducer != null) {
+            try {
                 kafkaProducer.close();
             } catch (Exception ex) {
                 LOGGER.log(Level.SEVERE, "Error closing Kafka producer", ex);
@@ -723,7 +792,25 @@ public class KcopHandler extends AbstractHandler {
 
     @Override
     public String reportStatus() {
-        return "[KcopHandler] processed=" + operationCount.get();
+        long elapsedNanos = Math.max(1L, System.nanoTime() - handlerStartedNanos);
+        double operationsPerSecond = operationCount.get() * 1_000_000_000.0 / elapsedNanos;
+        return String.format(java.util.Locale.ROOT,
+                "[KcopHandler] processed=%d accepted=%d acknowledged=%d pending=%d failed=%d"
+                        + " committedTransactions=%d activeTransactions=%d opsPerSecond=%.2f"
+                        + " averageAckMs=%.3f maxAckMs=%.3f backpressureCount=%d"
+                        + " backpressureMs=%.3f",
+                operationCount.get(),
+                deliveryTracker.acceptedCount(),
+                deliveryTracker.acknowledgedCount(),
+                deliveryTracker.pendingCount(),
+                deliveryTracker.failedCount(),
+                deliveryTracker.committedTransactionCount(),
+                deliveryTracker.activeTransactionCount(),
+                operationsPerSecond,
+                deliveryTracker.averageDeliveryLatencyNanos() / 1_000_000.0,
+                deliveryTracker.maxDeliveryLatencyNanos() / 1_000_000.0,
+                deliveryTracker.backpressureCount(),
+                deliveryTracker.backpressureNanos() / 1_000_000.0);
     }
 
     private Level parseLogLevel(String configuredLevel) {
@@ -847,114 +934,63 @@ public class KcopHandler extends AbstractHandler {
         return sb.toString();
     }
 
-    // Try to get operation/event timestamp in millis; fallback to System.currentTimeMillis()
-    private long extractOperationTimestampMillis(DsEvent event, DsTransaction tx, DsOperation operation) {
-        Long fromEvent = tryGetMillisViaReflection(event, "getTimestamp");
-        if (fromEvent != null) {
-            return fromEvent;
-        }
-
-        // Try: operation.getTimestamp()
-        Long fromOp = tryGetMillisViaReflection(operation, "getTimestamp");
-        if (fromOp != null) {
-            return fromOp;
-        }
-
-        // Try: tx.getTimestamp()
-        Long fromTx = tryGetMillisViaReflection(tx, "getTimestamp");
-        if (fromTx != null) {
-            return fromTx;
-        }
-
-        // Fallback
-        return System.currentTimeMillis();
-    }
-
-    // Helper: call obj.methodName() and convert to millis if it returns Date/Long/String
-    private Long tryGetMillisViaReflection(Object obj, String methodName) {
-        if (obj == null) {
-            return null;
-        }
-        try {
-            Method m = obj.getClass().getMethod(methodName);
-            Object val = m.invoke(obj);
-            if (val == null) {
-                return null;
-            }
-
-            if (val instanceof Date) {
-                return ((Date) val).getTime();
-            }
-            if (val instanceof Number) {
-                return ((Number) val).longValue();
-            }
-            if (val instanceof CharSequence) {
-                // Try parse epoch millis from string; otherwise return null
-                try {
-                    return Long.valueOf(val.toString().trim());
-                } catch (NumberFormatException ignore) {
-                    return null;
-                }
-            }
-        } catch (IllegalAccessException
-                | IllegalArgumentException
-                | NoSuchMethodException
-                | SecurityException
-                | InvocationTargetException ignore) {
-            return null;
-        }
-        return null;
-    }
-
-    // Try to get user name from event/tx/operation via common GG methods; fallback null
-    private String extractUser(DsEvent event, DsTransaction tx, DsOperation operation) {
-        String user;
-        // Common method names across GG APIs
-        String[] methodCandidates = new String[]{
-            "getUserName", "getUsername", "getUser", "getJobUser", "getOwner"
-        };
-        user = tryGetStringViaReflection(tx, methodCandidates);
-        if (user != null && !user.isEmpty()) {
-            return user;
-        }
-        user = tryGetStringViaReflection(operation, methodCandidates);
-        if (user != null && !user.isEmpty()) {
-            return user;
-        }
-        user = tryGetStringViaReflection(event, methodCandidates);
-        return (user != null && !user.isEmpty()) ? user : null;
-    }
-
-    // Helper: call the first available method that returns a String
-    private String tryGetStringViaReflection(Object obj, String[] methodNames) {
-        if (obj == null || methodNames == null) {
-            return null;
-        }
-        for (String mName : methodNames) {
+    String extractOperationTimestamp(DsTransaction tx, DsOperation operation) {
+        String operationTimestamp = null;
+        if (operation != null) {
             try {
-                Method m = obj.getClass().getMethod(mName);
-                Object val = m.invoke(obj);
-                if (val instanceof CharSequence) {
-                    String s = val.toString().trim();
-                    if (!s.isEmpty()) {
-                        return s;
-                    }
-                }
-            } catch (Exception ignore) {
+                operationTimestamp = operation.getTimestampAsString();
+            } catch (RuntimeException ignore) {
+                // Fall through to the transaction timestamp.
             }
         }
-        return null;
+        String transactionTimestamp = null;
+        if (tx != null) {
+            try {
+                transactionTimestamp = tx.getTimestampAsString();
+            } catch (RuntimeException ignore) {
+                // Fall through to the local clock.
+            }
+        }
+        return OperationTimestampResolver.resolve(
+                operationTimestamp,
+                transactionTimestamp,
+                dateFormatHandler,
+                System::currentTimeMillis);
     }
 
-    private String getColumnNameByIndex(int index, TableMetaData tableMetaData) {
-        try {
-            ColumnMetaData colMeta = safeGetColumnMetaData(tableMetaData, index);
-            if (colMeta != null) {
-                return colMeta.getColumnName();
-            }
-        } catch (Exception e) {
-            LOGGER.log(Level.FINE, "Unable to resolve column name at index " + index, e);
+    private String[] buildColumnNames(TableMetaData tableMetaData) {
+        if (tableMetaData == null || tableMetaData.getNumColumns() <= 0) {
+            return new String[0];
         }
-        return "COL_" + index;
+        String[] names = new String[tableMetaData.getNumColumns()];
+        for (int index = 0; index < names.length; index++) {
+            ColumnMetaData colMeta = safeGetColumnMetaData(tableMetaData, index);
+            names[index] = colMeta != null && colMeta.getColumnName() != null
+                    ? colMeta.getColumnName()
+                    : "COL_" + index;
+        }
+        return names;
+    }
+
+    private String transactionKey(DsTransaction tx) {
+        if (tx == null) {
+            return "NO_TRANSACTION";
+        }
+        String id = "";
+        String started = null;
+        try {
+            id = tx.getTranID() != null ? tx.getTranID().toString() : "";
+        } catch (RuntimeException ignore) {
+            // Use timestamp or object identity below.
+        }
+        try {
+            started = tx.getStartTxTimeAsString();
+        } catch (RuntimeException ignore) {
+            // Use transaction id or object identity below.
+        }
+        if (!id.isEmpty() || (started != null && !started.isEmpty())) {
+            return id + '|' + (started != null ? started : "");
+        }
+        return "IDENTITY|" + Integer.toHexString(System.identityHashCode(tx));
     }
 }

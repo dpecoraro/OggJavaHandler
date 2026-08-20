@@ -8,10 +8,10 @@ import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashSet;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -24,7 +24,7 @@ public class SchemaRegistryClient {
 
     private static final Logger LOGGER = Logger.getLogger(SchemaRegistryClient.class.getName());
     private final Set<String> registryUrls = new LinkedHashSet<>();
-    private final Map<String, String> registeredSchemas = new LinkedHashMap<>();
+    private final Map<String, String> registeredSchemas = new ConcurrentHashMap<>();
 
     public void init(Properties props) {
         String valueUrls = props.getProperty("value.converter.schema.registry.url");

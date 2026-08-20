@@ -1,4 +1,4 @@
 -------------------------------------------------------------------------------
 Test set: com.santander.goldengate.handler.KcopHandlerFailureHandlingTest
 -------------------------------------------------------------------------------
-Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.050 s -- in com.santander.goldengate.handler.KcopHandlerFailureHandlingTest
+Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.048 s -- in com.santander.goldengate.handler.KcopHandlerFailureHandlingTest

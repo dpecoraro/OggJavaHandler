@@ -1,8 +1,6 @@
 package com.santander.goldengate.handler;
 
 import java.util.Base64;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
 
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
@@ -31,21 +29,6 @@ final class OperationDeliverySupport {
             return Base64.getEncoder().encodeToString((byte[]) value);
         }
         return value;
-    }
-
-    static <T> T await(Future<T> delivery) throws Exception {
-        try {
-            return delivery.get();
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            throw ex;
-        } catch (ExecutionException ex) {
-            Throwable cause = ex.getCause();
-            if (cause instanceof Exception) {
-                throw (Exception) cause;
-            }
-            throw ex;
-        }
     }
 
     static Object resolveSqlNull(Schema.Field field) {

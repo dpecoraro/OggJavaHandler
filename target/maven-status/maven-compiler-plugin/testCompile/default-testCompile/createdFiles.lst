@@ -3,7 +3,9 @@ com/santander/goldengate/handler/KcopHandlerFailureHandlingTest.class
 oracle/goldengate/util/ConfigException.class
 com/santander/goldengate/handler/AvroSchemaManagerTest.class
 com/santander/goldengate/handler/AvroProducerConfigurationTest.class
+com/santander/goldengate/helpers/DateFormatHandlerTest.class
 com/santander/goldengate/handler/KeyFieldOrderResolverTest$TestField.class
+com/santander/goldengate/handler/TransactionDeliveryTrackerTest.class
 com/santander/goldengate/helpers/SchemaTypeConverterTest.class
 com/santander/goldengate/handler/KcopHandlerTest.class
 com/santander/goldengate/handler/KeyFieldOrderResolverTest.class
@@ -11,3 +13,4 @@ com/santander/goldengate/helpers/DecimalValueConverterTest.class
 com/santander/goldengate/helpers/ColumnSchemaMapperTest.class
 oracle/goldengate/util/GGException.class
 com/santander/goldengate/handler/Db2SchemaContractCatalogTest.class
+com/santander/goldengate/handler/OperationTimestampResolverTest.class

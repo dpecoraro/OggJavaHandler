@@ -24,11 +24,12 @@ Os guias usam exclusivamente fatos comprovados pelo repositório. Configuração
    - monta um **envelope** com `beforeImage` / `afterImage` + campos de auditoria
    - monta uma **chave Avro** (`GenericRecord`) a partir das colunas-chave
    - publica em um **tópico Kafka** usando `KafkaProducer` + `KafkaAvroSerializer`
-   - aguarda a confirmação do producer antes de retornar sucesso ao GoldenGate.
+   - enfileira a publicação sem aguardar cada mensagem individualmente e confirma
+     todas as entregas da transação antes de liberar o commit ao GoldenGate.
 
-Se a transformação, serialização ou entrega ao Kafka falhar, `operationAdded()`
-registra o erro e retorna `Status.ABEND`, solicitando a parada do Replicat para
-evitar que o fluxo avance silenciosamente sem o evento.
+Se a transformação ou o envio síncrono falhar, `operationAdded()` retorna
+`Status.ABEND`. Falhas assíncronas de entrega são verificadas no commit, que
+também retorna `Status.ABEND` antes do avanço do checkpoint.
 
 ## Principais bibliotecas (com foco no GoldenGate)
 
@@ -90,9 +91,10 @@ Responsabilidades principais:
     2) default interno (`defaultKeyColumnSpecs`)
     3) fallback para metadado GG (`ColumnMetaData.isKeyCol()`)
   - preenche cada campo da chave conforme seu tipo no schema Avro.
-- **Publicação Kafka:** envia `ProducerRecord<GenericRecord, GenericRecord>` e aguarda
-  o `Future` retornado pelo producer. Falhas síncronas ou assíncronas são
-  propagadas até `operationAdded()`.
+- **Publicação Kafka:** envia `ProducerRecord<GenericRecord, GenericRecord>` com
+  callback assíncrono e limita a quantidade global de entregas pendentes.
+  Falhas síncronas chegam a `operationAdded()`; falhas assíncronas são propagadas
+  no máximo até `transactionCommit()`, antes do avanço do checkpoint.
 - **Política de falha:** qualquer exceção no processamento da operação resulta
   em `Status.ABEND` para interromper o Replicat.
 
@@ -171,15 +173,15 @@ O build gera um JAR “fat” (com dependências) via `maven-assembly-plugin`.
 mvn -q test
 ```
 
-Na linha de base registrada no [handover](docs/HANDOVER.md#12-testes-e-confiança-atual),
-31 testes foram executados com sucesso e 13 testes de `KcopHandlerTest` foram
-ignorados. A suíte não substitui um teste integrado com GoldenGate, Schema
-Registry e Kafka.
+Na linha de base atual, 49 testes são executados com sucesso e 13 testes de
+`KcopHandlerTest` permanecem ignorados por dependerem de classes disponíveis
+somente no runtime completo do GoldenGate. A suíte não substitui um teste
+integrado com GoldenGate, Schema Registry e Kafka.
 
 ## Observações operacionais
 
-- **Schema Registry:** o handler tenta garantir `schema.registry.url` (usando fallbacks `value.converter.schema.registry.url` / `key.converter.schema.registry.url`).
-- **Key do Kafka:** hoje o producer usa **key String** (não Avro). Existe um “schema de key” construído, mas ele é usado para definir regras de padding/tipos e não é enviado como Avro.
+- **Schema Registry:** o handler tenta garantir `schema.registry.url` (usando fallbacks `value.converter.schema.registry.url` / `key.converter.schema.registry.url`). Com `auto.register.schemas=true`, o serializer registra e mantém o schema em cache; o cliente REST explícito é usado apenas quando esse auto-registro está desabilitado.
+- **Key do Kafka:** o producer publica key e value como `GenericRecord` no wire format Avro da Confluent.
 - **Tópico:** é resolvido por template (`topicMappingTemplate`) via `resolveTopic(...)`.
 
 Propriedades operacionais adicionais no arquivo do producer Kafka:
@@ -190,10 +192,20 @@ gg.handler.kcoph.logLevel=INFO
 
 # Publica o reportStatus a cada N operações; 0 desabilita.
 gg.handler.kcoph.statusLogInterval=10000
+
+# opcional; default interno 1000. Limita entregas Kafka sem acknowledgement.
+gg.handler.kcoph.maxPendingDeliveries=1000
 ```
 
-O `reportStatus()` informa a quantidade de operações processadas. Logs em `INFO`
-não incluem payload, chave ou detalhes por coluna.
+Para preservar ordem e entrega, o handler aplica os defaults seguros
+`enable.idempotence=true`, `acks=all`,
+`max.in.flight.requests.per.connection=5` e `retries=2147483647` quando essas
+propriedades não forem informadas. Overrides incompatíveis interrompem a
+inicialização, em vez de iniciar o Replicat sem as garantias necessárias.
+
+O `reportStatus()` informa operações, entregas aceitas/confirmadas/pendentes,
+falhas, transações, throughput, latência de acknowledgement e backpressure.
+Logs em `INFO` não incluem payload, chave ou detalhes por coluna.
 
 ### Contrato de tipos compatível com CDC DB2
 

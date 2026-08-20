@@ -5,11 +5,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.Arrays;
-import java.util.concurrent.CompletableFuture;
 
 import org.apache.avro.Schema;
 import org.apache.avro.Schema.Type;
-import org.apache.kafka.common.errors.SerializationException;
 import org.junit.jupiter.api.Test;
 
 import com.santander.goldengate.helpers.DecimalValueConverter;
@@ -79,18 +77,6 @@ class KcopHandlerFailureHandlingTest {
         assertEquals(
                 "SQL NULL received for non-nullable field without default REQUIRED_WITHOUT_DEFAULT",
                 thrown.getMessage());
-    }
-
-    @Test
-    void waitsForKafkaAcknowledgementAndPropagatesAsynchronousFailure() throws Exception {
-        CompletableFuture<org.apache.kafka.clients.producer.RecordMetadata> failed = new CompletableFuture<>();
-        SerializationException failure = new SerializationException("serialization failed");
-        failed.completeExceptionally(failure);
-
-        SerializationException thrown = assertThrows(
-                SerializationException.class, () -> OperationDeliverySupport.await(failed));
-
-        assertEquals(failure, thrown);
     }
 
     @Test

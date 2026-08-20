@@ -2,9 +2,9 @@ package com.santander.goldengate.handler;
 
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.avro.Schema;
 import org.apache.avro.Schema.Field;
@@ -25,7 +25,7 @@ import oracle.goldengate.datasource.meta.TableMetaData;
  */
 public class AvroSchemaManager {
 
-    private final Map<String, Schema> schemaCache = new HashMap<>();
+    private final Map<String, Schema> schemaCache = new ConcurrentHashMap<>();
     private final String namespacePrefix;
     private final ColumnSchemaMapper columnSchemaMapper;
 
@@ -39,7 +39,8 @@ public class AvroSchemaManager {
     }
 
     public Schema getOrCreateAvroSchema(String tableName, TableMetaData tableMetaData) {
-        Schema cached = schemaCache.get(tableName);
+        String cacheKey = tableName != null ? tableName : "UNKNOWN";
+        Schema cached = schemaCache.get(cacheKey);
         if (cached != null) return cached;
 
         final String rawName = tableName != null && tableName.contains(".")
@@ -84,8 +85,8 @@ public class AvroSchemaManager {
         envelopeFields.add(nullableUnionField("A_USER", Schema.create(Type.STRING)));
 
         Schema envelopeSchema = Schema.createRecord("AuditRecord", "", namespacePrefix, false, envelopeFields);
-        schemaCache.put(tableName, envelopeSchema);
-        return envelopeSchema;
+        Schema existing = schemaCache.putIfAbsent(cacheKey, envelopeSchema);
+        return existing != null ? existing : envelopeSchema;
     }
 
     public void clearCache() {
