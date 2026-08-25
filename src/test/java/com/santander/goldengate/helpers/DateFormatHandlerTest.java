@@ -10,6 +10,16 @@ class DateFormatHandlerTest {
     private final DateFormatHandler formatter = new DateFormatHandler();
 
     @Test
+    void normalizesDb2TimeSeparators() {
+        assertEquals("23:01:36", formatter.normalizeTimeString("23.01.36"));
+    }
+
+    @Test
+    void preservesTimeAlreadyUsingColonSeparators() {
+        assertEquals("23:01:36", formatter.normalizeTimeString("23:01:36"));
+    }
+
+    @Test
     void normalizesGoldenGateTimestampAndPadsFractionToTwelveDigits() {
         assertEquals("2026-08-20 10:27:04.123000000000",
                 formatter.formatTimestampSpace12("2026-08-20T10:27:04.123"));

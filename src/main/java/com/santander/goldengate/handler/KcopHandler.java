@@ -440,6 +440,12 @@ public class KcopHandler extends AbstractHandler {
 
             out = convertValueToSchemaType(value, effectiveSchema);
 
+            // TIME -> HH:mm:ss (GoldenGate emits DB2 TIME values as HH.mm.ss)
+            if (logical != null && "TIME".equalsIgnoreCase(logical)
+                    && out instanceof CharSequence) {
+                return dateFormatHandler.normalizeTimeString(out.toString());
+            }
+
             // DATE -> yyyy-MM-dd
             boolean isDateLogical = logical != null && "DATE".equalsIgnoreCase(logical);
             boolean isDateFieldName = fieldName != null && fieldName.toUpperCase().startsWith("DT_");

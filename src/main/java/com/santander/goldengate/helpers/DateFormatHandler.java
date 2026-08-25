@@ -35,6 +35,22 @@ public class DateFormatHandler {
         return dateOnly.length() >= 10 ? dateOnly.substring(0, 10) : dateOnly;
     }
 
+    // Normalize DB2 TIME strings emitted by GoldenGate (HH.mm.ss) to HH:mm:ss.
+    public String normalizeTimeString(String input) {
+        if (input == null) {
+            return null;
+        }
+        String normalized = input.trim();
+        if (normalized.length() == 8
+                && isTimeSeparator(normalized.charAt(2))
+                && isTimeSeparator(normalized.charAt(5))) {
+            return normalized.substring(0, 2) + ':'
+                    + normalized.substring(3, 5) + ':'
+                    + normalized.substring(6, 8);
+        }
+        return normalized;
+    }
+
     public String TimeStampNormalize() {
         LocalDateTime ldt = LocalDateTime.ofInstant(Instant.now(), ZoneId.systemDefault());
         return formatWithFraction(ldt, ISO_SECONDS, 18);
@@ -117,5 +133,9 @@ public class DateFormatHandler {
             }
         }
         return true;
+    }
+
+    private boolean isTimeSeparator(char value) {
+        return value == '.' || value == ':';
     }
 }
